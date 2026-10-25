@@ -1,0 +1,4 @@
+# Copy outside the repository and set FAMILY_F2_CONFIG in .env.
+# Never commit the completed file. Do not pass cookies on the command line.
+douyin:
+  cookie: ''

@@ -1,0 +1,26 @@
+name: parent_app
+description: "A new Flutter project."
+publish_to: 'none'
+version: 0.7.0+9
+
+environment:
+  sdk: ^3.12.2
+
+dependencies:
+  family_api:
+    path: ../../packages/family_api
+  file_picker: ^13.1.0
+  flutter:
+    sdk: flutter
+  video_player: ^2.14.1
+  shared_preferences: ^2.5.6
+
+dev_dependencies:
+  http: ^1.6.0
+  flutter_secure_storage: ^10.0.0
+  flutter_test:
+    sdk: flutter
+  flutter_lints: ^6.0.0
+
+flutter:
+  uses-material-design: true
