@@ -1,13 +1,28 @@
 import 'dart:async';
 import 'feed_player_cache.dart';
 import 'playback_progress.dart';
+import 'watch_stats.dart';
 import 'package:family_api/family_api.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:video_player/video_player.dart';
+import 'package:video_player_platform_interface/video_player_platform_interface.dart';
+// playerId 为门面 testing-only 成员，倍速需经平台接口直调。
+// ignore_for_file: invalid_use_of_visible_for_testing_member
 
 const accent = Color(0xfffe2c55);
 const cyan = Color(0xff25f4ee);
+
+/// 门面 video_player 未暴露倍速设置，经平台接口直调（fork 的 ExoPlayer 已实现）。
+Future<void> setPlayerSpeed(VideoPlayerController? controller, double speed) {
+    if (controller == null || controller.playerId < 0) {
+    return Future.value();
+  }
+  return VideoPlayerPlatform.instance.setPlaybackSpeed(
+    controller.playerId,
+    speed,
+  );
+}
 
 /// The overlay is independent of the player so layout and interactions can be
 /// tested without a native decoder, at phone, tablet and TV resolutions.
@@ -222,6 +237,9 @@ class FeedView extends StatefulWidget {
   final ValueChanged<String> onLike;
   final Future<void> Function(Map<String, dynamic>) onDownload;
   final VoidCallback onCollections;
+
+  /// 在第一条继续下拉或最后一条继续上拉时触发，用于拉取服务器最新内容。
+  final Future<void> Function()? onLoadLatest;
   const FeedView({
     super.key,
     required this.api,
@@ -235,6 +253,7 @@ class FeedView extends StatefulWidget {
     required this.onLike,
     required this.onDownload,
     required this.onCollections,
+    this.onLoadLatest,
   });
   @override
   State<FeedView> createState() => _FeedViewState();
@@ -256,13 +275,47 @@ class _FeedViewState extends State<FeedView> with WidgetsBindingObserver {
   String? playingId;
   bool restoringPosition = false;
   bool appActive = true;
+  // 观看统计：按采样累计观看时长、播放次数与完播，批量上报服务器。
+  late final WatchReporter reporter = WatchReporter(widget.api);
+  final Map<String, Duration> lastSample = {};
+  final Set<String> completedSeen = {};
+  bool playCounted = false;
+  // 播放手势瞬态：长按 2 倍速、水平拖动快进的预览位置（毫秒）。
+  bool speeding = false;
+  double? seekPreview;
+  Duration seekTotal = Duration.zero;
+  double seekTarget = 0;
+  bool seekForward = true;
+
+  // 边缘拖动加载最新：单次手势只触发一次，加载中与冷却期内不再触发。
+  bool loadingLatest = false;
+  bool edgeGestureConsumed = true;
+  double edgeDragDistance = 0;
+  DateTime edgeCooldownUntil = DateTime(2000);
 
   void remember() {
     final p = player;
-    if (playingId != null &&
-        p?.value.isInitialized == true &&
-        !restoringPosition) {
+    if (playingId == null || p?.value.isInitialized != true) return;
+    if (!restoringPosition) {
       progress.record(playingId!, p!.value.position, p.value.duration);
+      // 统计采样：正向播放增量计时长；首次开播计一次播放；接近片尾记完播。
+      final position = p.value.position;
+      final last = lastSample[playingId!];
+      if (last != null && position > last) {
+        reporter.record(playingId!, watched: position - last);
+      }
+      lastSample[playingId!] = position;
+      if (!playCounted && p.value.isPlaying) {
+        playCounted = true;
+        reporter.record(playingId!, played: true);
+      }
+      if (!completedSeen.contains(playingId) &&
+          p.value.duration > Duration.zero &&
+          (p.value.isCompleted ||
+              position >= p.value.duration - const Duration(milliseconds: 800))) {
+        completedSeen.add(playingId!);
+        reporter.record(playingId!, completed: true);
+      }
     }
   }
 
@@ -322,6 +375,7 @@ class _FeedViewState extends State<FeedView> with WidgetsBindingObserver {
     if (!appActive) {
       remember();
       unawaited(progress.flush());
+      unawaited(reporter.flush());
       player?.pause();
     }
   }
@@ -336,11 +390,13 @@ class _FeedViewState extends State<FeedView> with WidgetsBindingObserver {
     final previous = player;
     remember();
     unawaited(progress.flush());
+    resetPlaybackGestures();
     previous?.removeListener(observePlayer);
     final v = Map<String, dynamic>.from(widget.items[next]);
     final entry = playerCache.obtain(v, widget.api, progress);
     activeEntry = entry;
     playingId = '${v['id']}';
+    playCounted = false; // 再次进入该视频重新计一次播放
     restoringPosition = true;
     player = entry.controller;
     error = null;
@@ -408,6 +464,124 @@ class _FeedViewState extends State<FeedView> with WidgetsBindingObserver {
     }
   }
 
+  /// 换页或释放播放器时复位倍速与快进预览，避免状态残留到下一条视频。
+  void resetPlaybackGestures() {
+    if (speeding) {
+      setPlayerSpeed(player, 1.0);
+      speeding = false;
+    }
+    seekPreview = null;
+    seekTarget = 0;
+    seekTotal = Duration.zero;
+  }
+
+  void startSpeedBoost() {
+    final p = player;
+    if (!sessionEnded && !speeding && p != null && p.value.isInitialized) {
+      setPlayerSpeed(p, 2.0);
+      setState(() => speeding = true);
+    }
+  }
+
+  void stopSpeedBoost() {
+    if (!speeding) return;
+    setPlayerSpeed(player, 1.0);
+    if (mounted) setState(() => speeding = false);
+  }
+
+  void startSeekPreview(DragStartDetails details) {
+    final p = player;
+    if (sessionEnded || speeding || p == null || !p.value.isInitialized) return;
+    seekTarget = p.value.position.inMilliseconds.toDouble();
+    seekTotal = p.value.duration;
+    setState(() => seekPreview = seekTarget);
+  }
+
+  void updateSeekPreview(DragUpdateDetails details) {
+    if (seekPreview == null) return;
+    final p = player;
+    if (p == null || !p.value.isInitialized || seekTotal <= Duration.zero) {
+      return;
+    }
+    final width = MediaQuery.of(context).size.width;
+    if (width <= 0) return;
+    final total = seekTotal.inMilliseconds.toDouble();
+    // 一屏宽的拖动距离最多快进/快退两分钟，避免长视频一划到底。
+    final span = total > 120000 ? 120000.0 : total;
+    seekTarget = (seekTarget + details.delta.dx / width * span).clamp(
+      0.0,
+      total,
+    );
+    seekForward = details.delta.dx >= 0;
+    setState(() => seekPreview = seekTarget);
+  }
+
+  void endSeekPreview(DragEndDetails details) {
+    final target = seekTarget;
+    final active = seekPreview != null;
+    final p = player;
+    setState(() => seekPreview = null);
+    if (!active || p == null || !p.value.isInitialized || sessionEnded) {
+      return;
+    }
+    p.seekTo(Duration(milliseconds: target.round()));
+  }
+
+  void cancelSeekPreview() {
+    if (seekPreview != null && mounted) setState(() => seekPreview = null);
+  }
+
+  /// 第一条继续下拉 / 最后一条继续上拉超过阈值时拉取服务器最新内容。
+  bool onEdgeScroll(ScrollNotification notice) {
+    if (notice.depth != 0) return false;
+    if (notice is ScrollStartNotification) {
+      edgeGestureConsumed = false;
+      edgeDragDistance = 0;
+      return false;
+    }
+    double delta = 0;
+    if (notice is OverscrollNotification) {
+      delta = notice.overscroll;
+    } else if (notice is ScrollUpdateNotification &&
+        notice.metrics.outOfRange) {
+      delta = notice.scrollDelta ?? 0;
+    } else {
+      return false;
+    }
+    if (delta == 0 ||
+        widget.onLoadLatest == null ||
+        loadingLatest ||
+        edgeGestureConsumed ||
+        DateTime.now().isBefore(edgeCooldownUntil)) {
+      return false;
+    }
+    final atFirst = index <= 0;
+    final atLast = index >= widget.items.length - 1;
+    if (!(delta < 0 && atFirst) && !(delta > 0 && atLast)) return false;
+    edgeDragDistance += delta;
+    if (edgeDragDistance.abs() < 60) return false;
+    edgeGestureConsumed = true;
+    edgeDragDistance = 0;
+    edgeCooldownUntil = DateTime.now().add(const Duration(seconds: 3));
+    unawaited(loadLatest());
+    return false;
+  }
+
+  Future<void> loadLatest() async {
+    final callback = widget.onLoadLatest;
+    if (callback == null || loadingLatest) return;
+    loadingLatest = true;
+    if (mounted) setState(() {});
+    try {
+      await callback();
+    } catch (_) {
+      /* 刷新失败由页面顶部横幅提示，播放不中断。 */
+    } finally {
+      loadingLatest = false;
+      if (mounted) setState(() {});
+    }
+  }
+
   Future<void> save(Map<String, dynamic> video) async {
     if (saving) return;
     setState(() => saving = true);
@@ -430,6 +604,7 @@ class _FeedViewState extends State<FeedView> with WidgetsBindingObserver {
     WidgetsBinding.instance.removeObserver(this);
     remember();
     unawaited(progress.flush());
+    reporter.dispose();
     player?.removeListener(observePlayer);
     progressTimer.cancel();
     session.cancel();
@@ -459,7 +634,9 @@ class _FeedViewState extends State<FeedView> with WidgetsBindingObserver {
                 style: TextStyle(color: Colors.white, fontSize: 26),
               ),
             )
-          : PageView.builder(
+          : NotificationListener<ScrollNotification>(
+            onNotification: onEdgeScroll,
+            child: PageView.builder(
               controller: pages,
               scrollDirection: Axis.vertical,
               itemCount: widget.items.length,
@@ -477,6 +654,13 @@ class _FeedViewState extends State<FeedView> with WidgetsBindingObserver {
                           widget.onLike(v['id']);
                         }
                       },
+                      onLongPressStart: (_) => startSpeedBoost(),
+                      onLongPressEnd: (_) => stopSpeedBoost(),
+                      onLongPressCancel: stopSpeedBoost,
+                      onHorizontalDragStart: startSeekPreview,
+                      onHorizontalDragUpdate: updateSeekPreview,
+                      onHorizontalDragEnd: endSeekPreview,
+                      onHorizontalDragCancel: cancelSeekPreview,
                       behavior: HitTestBehavior.opaque,
                       child: Center(
                         child: p?.value.isInitialized == true
@@ -533,6 +717,22 @@ class _FeedViewState extends State<FeedView> with WidgetsBindingObserver {
                               )
                             : const SizedBox.shrink(),
                       ),
+                    if (speeding && i == index)
+                      const IgnorePointer(child: Center(child: SpeedBadge())),
+                    if (loadingLatest)
+                      const IgnorePointer(
+                        child: Center(child: LoadingLatestBadge()),
+                      ),
+                    if (seekPreview != null && i == index)
+                      IgnorePointer(
+                        child: Center(
+                          child: SeekPreviewBadge(
+                            target: seekPreview!,
+                            total: seekTotal,
+                            forward: seekForward,
+                          ),
+                        ),
+                      ),
                     FeedOverlay(
                       video: v,
                       liked: widget.favorites.contains(v['id']),
@@ -564,8 +764,139 @@ class _FeedViewState extends State<FeedView> with WidgetsBindingObserver {
                 );
               },
             ),
+          ),
     ),
   );
+}
+
+String _mmss(Duration d) {
+  final m = d.inMinutes, s = d.inSeconds % 60;
+  return '$m:${s.toString().padLeft(2, '0')}';
+}
+
+/// 长按屏幕时居中显示的 2 倍速提示。
+class SpeedBadge extends StatelessWidget {
+  const SpeedBadge({super.key});
+  @override
+  Widget build(BuildContext context) => Container(
+    padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 10),
+    decoration: BoxDecoration(
+      color: Colors.black54,
+      borderRadius: BorderRadius.circular(30),
+    ),
+    child: const Row(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        Icon(Icons.fast_forward_rounded, color: Colors.white, size: 22),
+        SizedBox(width: 6),
+        Text(
+          '2倍速播放中',
+          style: TextStyle(
+            color: Colors.white,
+            fontSize: 15,
+            fontWeight: FontWeight.w600,
+          ),
+        ),
+      ],
+    ),
+  );
+}
+
+/// 边缘拖动触发加载时的居中提示。
+class LoadingLatestBadge extends StatelessWidget {
+  const LoadingLatestBadge({super.key});
+  @override
+  Widget build(BuildContext context) => Container(
+    padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 12),
+    decoration: BoxDecoration(
+      color: Colors.black54,
+      borderRadius: BorderRadius.circular(30),
+    ),
+    child: const Row(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        SizedBox(
+          width: 16,
+          height: 16,
+          child: CircularProgressIndicator(color: Colors.white, strokeWidth: 2),
+        ),
+        SizedBox(width: 10),
+        Text(
+          '正在加载最新内容…',
+          style: TextStyle(
+            color: Colors.white,
+            fontSize: 15,
+            fontWeight: FontWeight.w600,
+          ),
+        ),
+      ],
+    ),
+  );
+}
+
+/// 水平拖动快进时的目标时间预览。
+class SeekPreviewBadge extends StatelessWidget {
+  final double target;
+  final Duration total;
+  final bool forward;
+  const SeekPreviewBadge({
+    super.key,
+    required this.target,
+    required this.total,
+    required this.forward,
+  });
+  @override
+  Widget build(BuildContext context) {
+    final totalMs = total.inMilliseconds.toDouble();
+    final fraction = totalMs > 0 ? (target / totalMs).clamp(0.0, 1.0) : 0.0;
+    return Container(
+      width: 190,
+      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+      decoration: BoxDecoration(
+        color: Colors.black54,
+        borderRadius: BorderRadius.circular(14),
+      ),
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Row(
+            mainAxisAlignment: MainAxisAlignment.center,
+            children: [
+              Icon(
+                forward
+                    ? Icons.fast_forward_rounded
+                    : Icons.fast_rewind_rounded,
+                color: Colors.white,
+                size: 20,
+              ),
+              const SizedBox(width: 6),
+              Text(
+                '${_mmss(Duration(milliseconds: target.round()))} / ${_mmss(total)}',
+                style: const TextStyle(
+                  color: Colors.white,
+                  fontSize: 15,
+                  fontWeight: FontWeight.w600,
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 8),
+          ClipRRect(
+            borderRadius: BorderRadius.circular(3),
+            child: SizedBox(
+              height: 4,
+              child: LinearProgressIndicator(
+                value: fraction,
+                minHeight: 4,
+                backgroundColor: Colors.white24,
+                valueColor: const AlwaysStoppedAnimation<Color>(Colors.white),
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
 }
 
 class FeedNavigation extends StatelessWidget {

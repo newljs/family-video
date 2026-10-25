@@ -7,6 +7,7 @@ import (
 	"io"
 	"mime/multipart"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -283,5 +284,65 @@ func TestExpiredMediaSignature(t *testing.T) {
 	path := "/media/old/video?role=admin&expires=" + strconv.FormatInt(expires, 10) + "&sig=" + a.signature("old", "video", expires, "admin")
 	if request(t, a, "GET", path, "", nil).Code != 403 {
 		t.Fatal("invalid expiry accepted")
+	}
+}
+func TestThumbnailURLsStableAndCacheable(t *testing.T) {
+	a := testApp(t)
+	seed(t, a, "sample", true)
+	if e := os.WriteFile(filepath.Join(a.Config.Data, "thumbnails", "sample.jpg"), []byte("cover"), 0600); e != nil {
+		t.Fatal(e)
+	}
+	first := list(t, request(t, a, "GET", "/api/videos", "child", nil))[0]
+	second := list(t, request(t, a, "GET", "/api/videos", "child", nil))[0]
+	if first["thumbnail_url"] != second["thumbnail_url"] {
+		t.Fatal("thumbnail URL churns between listings")
+	}
+	if mediaExpires(t, first["thumbnail_url"].(string)) < time.Now().Unix()+29*24*3600 {
+		t.Fatal("thumbnail signature too short-lived")
+	}
+	if mediaExpires(t, first["media_url"].(string)) > time.Now().Unix()+2*24*3600 {
+		t.Fatal("video signature should stay short-lived")
+	}
+	r := httptest.NewRequest("GET", first["thumbnail_url"].(string), nil)
+	w := httptest.NewRecorder()
+	a.Handler().ServeHTTP(w, r)
+	if w.Code != 200 || !strings.Contains(w.Header().Get("Cache-Control"), "max-age=") {
+		t.Fatal("thumbnail response not cacheable", w.Code, w.Header().Get("Cache-Control"))
+	}
+	r = httptest.NewRequest("GET", first["media_url"].(string), nil)
+	w = httptest.NewRecorder()
+	a.Handler().ServeHTTP(w, r)
+	if strings.Contains(w.Header().Get("Cache-Control"), "max-age=") {
+		t.Fatal("video response should stay no-cache")
+	}
+}
+
+func mediaExpires(t *testing.T, raw string) int64 {
+	t.Helper()
+	u, e := url.Parse(raw)
+	if e != nil {
+		t.Fatal(e)
+	}
+	n, e := strconv.ParseInt(u.Query().Get("expires"), 10, 64)
+	if e != nil {
+		t.Fatal(e)
+	}
+	return n
+}
+
+func TestThumbExpiryBucketsMonthly(t *testing.T) {
+	now := time.Now().Unix()
+	stable := thumbExpiry(time.Unix(now, 0))
+	until := thumbURLPeriod - now%thumbURLPeriod
+	for offset := int64(0); offset < until; offset += 600 {
+		if got := thumbExpiry(time.Unix(now+offset, 0)); got != stable {
+			t.Fatal("thumbnail URL changed within one bucket", offset)
+		}
+	}
+	if stable < now+29*24*3600 || stable > now+2*thumbURLPeriod {
+		t.Fatal("expiry outside month window", stable-now)
+	}
+	if got := thumbExpiry(time.Unix(now+until, 0)); got == stable {
+		t.Fatal("expiry never rolls over")
 	}
 }

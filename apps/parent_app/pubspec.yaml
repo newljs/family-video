@@ -4,23 +4,26 @@ publish_to: 'none'
 version: 0.7.0+9
 
 environment:
-  sdk: ^3.12.2
+  sdk: ">=3.7.0 <4.0.0"
 
 dependencies:
   family_api:
     path: ../../packages/family_api
-  file_picker: ^13.1.0
+  file_picker: 11.0.3
+  mobile_scanner: ^7.4.2
   flutter:
     sdk: flutter
-  video_player: ^2.14.1
-  shared_preferences: ^2.5.6
+  package_info_plus: ^9.0.1
+  url_launcher: ^6.3.2
+  video_player: 2.10.1
+  shared_preferences: ^2.5.3
 
 dev_dependencies:
   http: ^1.6.0
   flutter_secure_storage: ^10.0.0
   flutter_test:
     sdk: flutter
-  flutter_lints: ^6.0.0
+  flutter_lints: ^5.0.0
 
 flutter:
   uses-material-design: true

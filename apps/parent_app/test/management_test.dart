@@ -17,9 +17,13 @@ void main() {
     await tester.pumpWidget(
       MaterialApp(
         home: Scaffold(
-          body: SingleChildScrollView(
+          body: SizedBox(
+              height: 700,
             child: LibraryPanel(
               videos: videos,
+              collections: const [],
+              onBatchCollect: (_, _, _) async {},
+              onBatchDelete: (_) async {},
               busy: false,
               url: (path) => 'https://example.invalid$path',
               onPreview: (_) {},
@@ -57,8 +61,12 @@ void main() {
       await tester.pumpWidget(
         MaterialApp(
           home: Scaffold(
-            body: SingleChildScrollView(
+            body: SizedBox(
+              height: 700,
               child: LibraryPanel(
+                collections: const [],
+                onBatchCollect: (_, _, _) async {},
+                onBatchDelete: (_) async {},
                 videos: const [
                   {'id': 'a', 'title': '自然小知识', 'description': '一段介绍自然的文字'},
                 ],
@@ -134,7 +142,7 @@ void main() {
     await tester.pumpAndSettle();
     await tester.tap(find.text('视频C'));
     await tester.pumpAndSettle();
-    await tester.tap(find.text('添加 1 条'));
+    await tester.tap(find.text('确定 1 条'));
     await tester.pumpAndSettle();
     await tester.enterText(find.byType(TextField), '精选自然');
     await tester.tap(find.text('保存'));

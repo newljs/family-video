@@ -31,3 +31,6 @@ cookies.txt
 cookies.json
 *.iml
 .idea/
+
+# macOS
+.DS_Store

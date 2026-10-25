@@ -159,9 +159,13 @@ func (a *App) RunOnce(ctx context.Context) (bool, error) {
 			return fmt.Errorf("视频检查失败，请检查文件格式与 FFmpeg")
 		}
 		hasVideo, compatible := false, true
+		var sourceWidth, sourceHeight int
 		for _, s := range p.Streams {
 			if s.Type == "video" {
 				hasVideo = true
+				if sourceWidth == 0 {
+					sourceWidth, sourceHeight = s.Width, s.Height
+				}
 			}
 			if (s.Type == "video" && s.Codec != "h264") || (s.Type == "audio" && s.Codec != "aac") {
 				compatible = false
@@ -176,15 +180,13 @@ func (a *App) RunOnce(ctx context.Context) (bool, error) {
 		metadata := chooseMetadata(title, manual, share, readMetadata(folder), p)
 		title = metadata.Title
 		a.progress(ctx, "processing", 0, 0)
-		args := []string{"-v", "error", "-y", "-i", path, "-map", "0:v:0", "-map", "0:a:0?"}
 		if compatible {
-			args = append(args, "-c", "copy")
-		} else {
-			args = append(args, "-c:v", "libx264", "-preset", "veryfast", "-crf", "23", "-pix_fmt", "yuv420p", "-c:a", "aac")
-		}
-		args = append(args, "-movflags", "+faststart", target)
-		if _, e = command(ctx, 15*time.Minute, "ffmpeg", args...); e != nil {
-			return fmt.Errorf("视频处理失败，请检查 FFmpeg 与磁盘空间")
+			args := []string{"-v", "error", "-y", "-i", path, "-map", "0:v:0", "-map", "0:a:0?", "-c", "copy", "-movflags", "+faststart", target}
+			if _, e = command(ctx, 15*time.Minute, "ffmpeg", args...); e != nil {
+				return fmt.Errorf("视频处理失败，请检查 FFmpeg 与磁盘空间")
+			}
+		} else if e = a.encodeVideo(ctx, path, target, sourceWidth, sourceHeight); e != nil {
+			return e
 		}
 		p, e = inspect(ctx, target)
 		if e != nil {

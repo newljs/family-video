@@ -1,0 +1,859 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>小小放映室 · 管理台</title>
+<style>
+:root { --bg:#f4f6f9; --card:#fff; --line:#e4e8ee; --text:#1f2733; --muted:#69758a;
+  --accent:#3b82f6; --ok:#16a34a; --warn:#d97706; --bad:#dc2626; --chip:#eef2f7; }
+* { box-sizing:border-box; }
+body { margin:0; background:var(--bg); color:var(--text);
+  font:14px/1.6 -apple-system,"PingFang SC","Microsoft YaHei",sans-serif; }
+header { background:var(--card); border-bottom:1px solid var(--line); padding:14px 22px;
+  display:flex; flex-wrap:wrap; gap:6px 18px; align-items:baseline; position:sticky; top:0; z-index:5; }
+header h1 { font-size:18px; margin:0; }
+header .sub { color:var(--muted); font-size:12px; }
+nav { display:flex; gap:4px; margin-left:auto; flex-wrap:wrap; }
+nav button { border:1px solid transparent; background:none; padding:6px 14px; border-radius:8px;
+  cursor:pointer; font-size:14px; color:var(--muted); }
+nav button.active { background:var(--chip); color:var(--text); font-weight:600; }
+main { max-width:1080px; margin:20px auto; padding:0 18px 60px; }
+section { display:none; }
+section.active { display:block; }
+h2 { font-size:15px; margin:26px 0 10px; color:var(--text); }
+h2:first-child { margin-top:4px; }
+.cards { display:grid; grid-template-columns:repeat(auto-fit,minmax(180px,1fr)); gap:12px; }
+.card { background:var(--card); border:1px solid var(--line); border-radius:12px; padding:14px 16px; }
+.card .k { color:var(--muted); font-size:12px; }
+.card .v { font-size:22px; font-weight:650; margin-top:2px; }
+.card .v small { font-size:12px; color:var(--muted); font-weight:400; }
+.panel { background:var(--card); border:1px solid var(--line); border-radius:12px; padding:14px 16px; margin-top:12px; }
+table { width:100%; border-collapse:collapse; font-size:13px; }
+th,td { text-align:left; padding:7px 8px; border-bottom:1px solid var(--line); vertical-align:middle; }
+th { color:var(--muted); font-weight:500; font-size:12px; white-space:nowrap; }
+td.num,th.num { text-align:right; font-variant-numeric:tabular-nums; }
+.chip { display:inline-block; background:var(--chip); border-radius:999px; padding:2px 10px;
+  font-size:12px; margin:2px 4px 2px 0; }
+.qr-figure { margin:0; text-align:center; font-size:12px; color:var(--muted); }
+.qr-figure img { width:150px; height:150px; background:#fff; border:1px solid var(--line);
+  border-radius:10px; padding:6px; display:block; margin:0 auto; }
+.qr-figure figcaption { margin-top:6px; line-height:1.6; }
+.qr-figure code { background:var(--chip); border-radius:6px; padding:1px 6px; word-break:break-all; }
+.qr-mini { width:96px; height:96px; background:#fff; border:1px solid var(--line); border-radius:8px; padding:4px; }
+.chip.on { background:#dcfce7; color:#166534; }
+.chip.off { background:#fee2e2; color:#991b1b; }
+.badge { display:inline-block; border-radius:6px; padding:1px 8px; font-size:12px; white-space:nowrap; }
+.b-queued { background:#e2e8f0; color:#475569; }
+.b-running { background:#dbeafe; color:#1d4ed8; }
+.b-completed { background:#dcfce7; color:#166534; }
+.b-failed { background:#fee2e2; color:#991b1b; }
+.b-cancelled { background:#f1f5f9; color:#94a3b8; }
+button.act { border:1px solid var(--line); background:var(--card); border-radius:8px;
+  padding:5px 12px; cursor:pointer; font-size:13px; }
+button.act:hover { border-color:var(--accent); color:var(--accent); }
+button.act.primary { background:var(--accent); border-color:var(--accent); color:#fff; }
+button.act.primary:disabled { opacity:.5; cursor:default; }
+button.act.danger { color:var(--bad); }
+button.act.danger:hover { border-color:var(--bad); }
+button.act:disabled { opacity:.5; cursor:default; }
+input[type=text],textarea { width:100%; border:1px solid var(--line); border-radius:8px;
+  padding:8px 10px; font:inherit; background:#fff; }
+textarea { resize:vertical; min-height:72px; }
+input:focus,textarea:focus { outline:2px solid #bfdbfe; border-color:var(--accent); }
+label.f { display:block; margin:10px 0 4px; color:var(--muted); font-size:13px; }
+.row { display:flex; gap:10px; flex-wrap:wrap; align-items:center; }
+.row > * { flex:1 1 160px; }
+.row > .fit { flex:0 0 auto; }
+.progress { height:8px; background:var(--chip); border-radius:999px; overflow:hidden; margin-top:8px; display:none; }
+.progress > div { height:100%; width:0; background:var(--accent); transition:width .2s; }
+.grid { display:grid; grid-template-columns:repeat(auto-fill,minmax(200px,1fr)); gap:12px; margin-top:10px; }
+.vcard { background:var(--card); border:1px solid var(--line); border-radius:12px; overflow:hidden; display:flex; flex-direction:column; position:relative; }
+.vcard.picked { outline:2px solid var(--accent); }
+.vcard .pick { position:absolute; top:8px; left:8px; z-index:2; background:rgba(255,255,255,.92); border-radius:8px; padding:4px 8px; font-size:12px; display:flex; gap:5px; align-items:center; cursor:pointer; }
+.vcard .thumb { aspect-ratio:16/10; background:#0f172a; display:flex; align-items:center; justify-content:center; color:#475569; font-size:24px; }
+.vcard img { width:100%; height:100%; object-fit:cover; display:block; }
+.vcard .body { padding:9px 11px 11px; display:flex; flex-direction:column; gap:6px; flex:1; }
+.vcard .t { font-weight:600; font-size:13px; line-height:1.45; max-height:2.9em; overflow:hidden; }
+.vcard .meta { color:var(--muted); font-size:12px; }
+.vcard .ops { display:flex; gap:6px; margin-top:auto; }
+.vcard .ops button { flex:1; padding:4px 6px; font-size:12px; }
+.muted { color:var(--muted); }
+.error-text { color:var(--bad); font-size:12px; }
+dialog { border:none; border-radius:14px; padding:0; width:min(560px,92vw); box-shadow:0 20px 60px rgba(15,23,42,.25); }
+dialog::backdrop { background:rgba(15,23,42,.35); }
+dialog .dhead { padding:14px 18px 0; font-weight:650; font-size:15px; }
+dialog .dbody { padding:6px 18px 4px; max-height:60vh; overflow:auto; }
+dialog .dfoot { padding:12px 18px 16px; display:flex; gap:10px; justify-content:flex-end; }
+.checklist { border:1px solid var(--line); border-radius:8px; max-height:260px; overflow:auto; padding:4px 0; }
+.checklist label { display:flex; gap:8px; padding:5px 10px; cursor:pointer; align-items:center; font-size:13px; }
+.checklist label:hover { background:var(--chip); }
+.checklist .muted { flex:1; text-align:right; font-size:12px; }
+#toast { position:fixed; left:50%; bottom:26px; transform:translateX(-50%); background:#111827; color:#fff;
+  border-radius:10px; padding:9px 18px; font-size:13px; opacity:0; pointer-events:none; transition:opacity .25s; z-index:50; max-width:80vw; }
+#toast.show { opacity:.95; }
+#toast.err { background:#7f1d1d; }
+.empty { color:var(--muted); text-align:center; padding:26px 0; }
+</style>
+</head>
+<body>
+<header>
+  <h1>🎬 小小放映室 · 管理台</h1>
+  <span class="sub" id="head-info"></span>
+  <nav id="tabs">
+    <button data-tab="overview" class="active">概览</button>
+    <button data-tab="tasks">收集与任务</button>
+    <button data-tab="videos">资源管理</button>
+    <button data-tab="collections">合集</button>
+    <button data-tab="apps">安装包</button>
+    <button data-tab="douyin">抖音配置</button>
+  </nav>
+</header>
+<main>
+  <div id="toast"></div>
+
+  <!-- ============ 概览 ============ -->
+  <section id="sec-overview" class="active">
+    <div class="cards" id="ov-cards"></div>
+    <div class="panel">
+      <div id="ov-tools"></div>
+      <table id="ov-usage"><thead><tr><th>数据目录</th><th class="num">文件数</th><th class="num">占用</th></tr></thead><tbody></tbody></table>
+    </div>
+    <h2>手机连接</h2>
+    <div class="panel" id="qr-panel">
+      <div class="row" style="align-items:center">
+        <b class="fit" style="font-size:13px">本机地址</b>
+        <select class="act fit" id="qr-address" style="flex:0 0 auto;max-width:260px"></select>
+        <span class="muted" style="font-size:12px">手机与电脑连同一 Wi-Fi 后扫码；家长端/儿童端 App 连接页直接输入所选地址即可。</span>
+      </div>
+      <div style="display:flex;gap:28px;flex-wrap:wrap;margin-top:14px">
+        <figure class="qr-figure">
+          <img id="qr-server" alt="App 服务器地址二维码">
+          <figcaption>App 服务器地址<br><code id="qr-server-text"></code></figcaption>
+        </figure>
+        <figure class="qr-figure">
+          <img id="qr-admin" alt="手机版管理台二维码">
+          <figcaption>手机打开管理台<br><code id="qr-admin-text"></code></figcaption>
+        </figure>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============ 收集与任务 ============ -->
+  <section id="sec-tasks">
+    <h2>导入抖音分享</h2>
+    <div class="panel">
+      <label class="f">粘贴抖音 App 分享出的文案（自动提取其中的链接）</label>
+      <textarea id="import-text" placeholder="例如：8.88 复制打开抖音...https://v.douyin.com/xxxx/"></textarea>
+      <label class="f">标题（可选，留空自动从文案提取）</label>
+      <div class="row">
+        <input type="text" id="import-title" placeholder="新收集的视频">
+        <button class="act primary fit" id="import-btn" style="flex:0 0 auto">加入下载队列</button>
+      </div>
+    </div>
+    <h2>上传本地视频</h2>
+    <div class="panel">
+      <div class="row">
+        <input type="text" id="upload-title" placeholder="标题（可选，默认用文件名）">
+        <input type="file" id="upload-file" accept="video/*" style="flex:2">
+        <button class="act primary fit" id="upload-btn" style="flex:0 0 auto">上传</button>
+      </div>
+      <div class="progress" id="upload-progress"><div></div></div>
+    </div>
+    <h2>任务列表 <span class="muted" style="font-size:12px;font-weight:400">（每 8 秒自动刷新）</span></h2>
+    <div class="panel" style="padding:6px 10px">
+      <table id="task-table"><thead>
+        <tr><th>时间</th><th>标题</th><th>状态</th><th>阶段 / 进度</th><th>错误</th><th>操作</th></tr>
+      </thead><tbody></tbody></table>
+      <div class="empty" id="task-empty" hidden>暂无任务</div>
+    </div>
+  </section>
+
+  <!-- ============ 资源管理 ============ -->
+  <section id="sec-videos">
+    <div class="row">
+      <input type="text" id="video-search" placeholder="搜索标题 / 描述…">
+      <select class="act fit" id="video-category" style="flex:0 0 auto;max-width:220px"><option value="">全部分类</option></select>
+      <select class="act fit" id="video-sort" style="flex:0 0 auto">
+        <option value="">最新优先</option>
+        <option value="most_played">播放最多</option>
+        <option value="most_completed">完播最多</option>
+        <option value="most_watched">观看最久</option>
+      </select>
+      <button class="act fit" id="video-refresh">刷新</button>
+      <button class="act fit" id="video-batch-btn">批量管理</button>
+    </div>
+    <div id="tag-bar" class="panel" hidden style="display:flex;flex-wrap:wrap;gap:6px;align-items:center;padding:10px 14px;margin-top:12px"></div>
+    <div class="panel" id="batch-bar" hidden style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">
+      <b id="batch-count" style="font-size:13px">已选 0 条</b>
+      <button class="act" id="batch-select-all">全选（本页）</button>
+      <button class="act" id="batch-clear">清除</button>
+      <button class="act" id="batch-collection">加入合集</button>
+      <button class="act danger" id="batch-delete">批量删除</button>
+      <button class="act" id="batch-exit" style="margin-left:auto">退出多选</button>
+    </div>
+    <div class="grid" id="video-grid"></div>
+    <div class="panel" id="pager" hidden style="display:flex;gap:12px;align-items:center;justify-content:center">
+      <button class="act" id="page-prev">← 上一页</button>
+      <span id="page-info" class="muted" style="font-size:13px"></span>
+      <button class="act" id="page-next">下一页 →</button>
+    </div>
+    <div class="empty" id="video-empty" hidden>没有符合条件的视频资源，换个分类/标签/关键词试试</div>
+  </section>
+
+  <!-- ============ 合集 ============ -->
+  <section id="sec-collections">
+    <div class="row">
+      <input type="text" id="col-title" placeholder="新合集名称">
+      <button class="act primary fit" id="col-create">创建合集</button>
+    </div>
+    <div id="col-list"></div>
+    <div class="empty" id="col-empty" hidden>还没有合集</div>
+  </section>
+
+  <!-- ============ 安装包 ============ -->
+  <section id="sec-apps">
+    <h2>客户端安装包 <span class="muted" style="font-size:12px;font-weight:400">（最新构建的 APK，下载后传到手机/平板安装）</span></h2>
+    <div class="grid" id="app-grid" style="grid-template-columns:repeat(auto-fill,minmax(300px,1fr))"></div>
+    <div class="panel muted" style="margin-top:14px;font-size:13px">
+      安装包来自 <code>apps/&lt;应用&gt;/build/app/outputs/flutter-apk/</code>（优先 app-release.apk，其次 app-debug.apk）。
+      当前为调试签名。未构建时请在装有 Flutter 环境的机器上运行 <code>scripts/build-android.ps1</code>，构建完成后回到本页即可下载。
+    </div>
+  </section>
+
+  <!-- ============ 抖音配置 ============ -->
+  <section id="sec-douyin">
+    <h2>登录状态</h2>
+    <div class="panel" id="dy-status">加载中…</div>
+    <h2>更新 Cookie</h2>
+    <div class="panel">
+      <label class="f">获取方式：电脑浏览器登录抖音网页版 → F12 打开开发者工具 →「网络」→ 刷新页面 → 点任意 douyin.com 请求 → 复制请求标头里 Cookie 的完整值粘贴到下面。</label>
+      <textarea id="dy-cookie" placeholder="粘贴 Cookie 完整值（保存后不会回显，仅写入服务器数据目录 private/f2.yaml）"></textarea>
+      <div class="row" style="margin-top:10px">
+        <button class="act primary fit" id="dy-save">保存 Cookie</button>
+        <span class="muted fit">保存后立即对新任务生效，无需重启服务。</span>
+      </div>
+    </div>
+    <h2>验证登录</h2>
+    <div class="panel">
+      <label class="f">用一条真实分享链接测试解析（约需 10–60 秒）</label>
+      <div class="row">
+        <input type="text" id="dy-test-url" placeholder="粘贴一条抖音分享链接">
+        <button class="act fit" id="dy-test-btn" style="flex:0 0 auto">测试解析</button>
+      </div>
+      <div id="dy-test-result" class="muted" style="margin-top:8px"></div>
+    </div>
+  </section>
+</main>
+
+<dialog id="dlg-video">
+  <form method="dialog">
+    <div class="dhead">编辑视频信息</div>
+    <div class="dbody">
+      <label class="f">标题</label>
+      <input type="text" id="dlg-video-title">
+      <label class="f">描述</label>
+      <textarea id="dlg-video-desc" style="min-height:110px"></textarea>
+    </div>
+    <div class="dfoot">
+      <button class="act" value="cancel">取消</button>
+      <button class="act primary" id="dlg-video-save" value="ok">保存</button>
+    </div>
+  </form>
+</dialog>
+
+<dialog id="dlg-batch-col">
+  <form method="dialog">
+    <div class="dhead">加入合集</div>
+    <div class="dbody">
+      <div id="dlg-batch-col-list"></div>
+      <label class="f">或创建新合集（填写后优先使用）</label>
+      <input type="text" id="dlg-batch-col-new" placeholder="新合集名称">
+    </div>
+    <div class="dfoot">
+      <button class="act" value="cancel">取消</button>
+      <button class="act primary" id="dlg-batch-col-save" type="button" value="ok">保存</button>
+    </div>
+  </form>
+</dialog>
+
+<dialog id="dlg-collection">
+  <form method="dialog">
+    <div class="dhead" id="dlg-col-title-edit">编辑合集</div>
+    <div class="dbody">
+      <label class="f">合集名称</label>
+      <input type="text" id="dlg-col-title">
+      <label class="f">包含的视频（可搜索，按勾选顺序）</label>
+      <input type="text" id="dlg-col-search" placeholder="搜索视频标题…">
+      <div class="checklist" id="dlg-col-videos"></div>
+    </div>
+    <div class="dfoot">
+      <button class="act" value="cancel">取消</button>
+      <button class="act primary" id="dlg-col-save" value="ok">保存</button>
+    </div>
+  </form>
+</dialog>
+
+<script>
+'use strict';
+const $ = s => document.querySelector(s);
+const $$ = s => document.querySelectorAll(s);
+const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+// API 一律用相对路径：直连 :8765 与经 svc 代理 /family-video/ 都成立
+const api = async (path, opts) => {
+  const r = await fetch(path, opts);
+  const data = await r.json().catch(() => ({}));
+  if (!r.ok) throw new Error(data.detail || ('HTTP ' + r.status));
+  return data;
+};
+const post = (path, body) => api(path, { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(body) });
+// 服务端返回的 /media/... 是绝对路径，转成相对以兼容代理前缀
+const rel = u => u && u.startsWith('/') ? u.slice(1) : u;
+
+let toastTimer;
+function toast(msg, err) {
+  const t = $('#toast');
+  t.textContent = msg;
+  t.className = err ? 'err show' : 'show';
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => t.classList.remove('show'), err ? 5000 : 2600);
+}
+const fmtBytes = n => {
+  if (n == null) return '—';
+  const u = ['B','KB','MB','GB','TB']; let i = 0;
+  while (n >= 1024 && i < u.length - 1) { n /= 1024; i++; }
+  return n.toFixed(n >= 100 || i === 0 ? 0 : 1) + ' ' + u[i];
+};
+const fmtDur = s => {
+  if (!s || s < 1) return '—';
+  const m = Math.floor(s / 60), sec = Math.round(s % 60);
+  return m + ':' + String(sec).padStart(2, '0');
+};
+const fmtUptime = sec => {
+  if (sec == null) return '';
+  const d = Math.floor(sec / 86400), h = Math.floor(sec % 86400 / 3600), m = Math.floor(sec % 3600 / 60);
+  return (d ? d + ' 天 ' : '') + (h ? h + ' 小时 ' : '') + m + ' 分钟';
+};
+const STATE_CN = { queued:'排队中', running:'进行中', completed:'已完成', failed:'失败', cancelled:'已取消' };
+const PHASE_CN = { queued:'排队', resolving:'解析', downloading:'下载', cached:'缓存', checking:'检查', processing:'转码', cover:'封面', streaming:'分片', waiting_retry:'等待重试', done:'完成' };
+const badge = state => `<span class="badge b-${esc(state)}">${esc(STATE_CN[state] || state)}</span>`;
+
+/* ---------- 标签页 ---------- */
+let activeTab = 'overview';
+$('#tabs').addEventListener('click', e => {
+  const btn = e.target.closest('button'); if (!btn) return;
+  activeTab = btn.dataset.tab;
+  $$('nav button').forEach(b => b.classList.toggle('active', b === btn));
+  $$('section').forEach(s => s.classList.toggle('active', s.id === 'sec-' + activeTab));
+  if (activeTab === 'overview') { loadSystem(); refreshQr(); }
+  if (activeTab === 'tasks') loadTasks();
+  if (activeTab === 'videos') loadVideos();
+  if (activeTab === 'collections') loadCollections();
+  if (activeTab === 'apps') loadApps();
+  if (activeTab === 'douyin') loadDouyin();
+});
+
+/* ---------- 概览 ---------- */
+async function loadSystem() {
+  try {
+    const d = await api('api/system');
+    $('#head-info').textContent = 'v' + d.version + (d.uptime_seconds != null ? ' · 已运行 ' + fmtUptime(d.uptime_seconds) : '');
+    const running = (d.tasks.running || 0) + (d.tasks.queued || 0);
+    const failed = d.tasks.failed || 0;
+    $('#ov-cards').innerHTML = [
+      ['磁盘可用', fmtBytes(d.disk_free_bytes)],
+      ['视频总数', d.video_count],
+      ['进行中任务', running],
+      ['失败任务', failed, failed > 0 ? 'color:var(--bad)' : ''],
+    ].map(([k, v, style]) =>
+      `<div class="card"><div class="k">${k}</div><div class="v"${style ? ` style="${style}"` : ''}>${esc(v)}</div></div>`).join('');
+    const tools = d.tools || {};
+    const chip = (label, on) => `<span class="chip ${on ? 'on' : 'off'}">${on ? '✓' : '✕'} ${label}</span>`;
+    $('#ov-tools').innerHTML =
+      chip('FFmpeg', tools.ffmpeg) + chip('ffprobe', tools.ffprobe) +
+      chip('下载器环境', tools.downloader) + chip('抖音登录配置', tools.douyin_configured) +
+      `<span class="muted" style="font-size:12px;margin-left:6px">数据目录 ${esc(d.data_dir)}</span>`;
+    const total = d.usage_total_bytes || 0;
+    $('#ov-usage tbody').innerHTML = (d.usage || []).map(u =>
+      `<tr><td>${esc(u.name)}</td><td class="num">${u.files}</td><td class="num">${fmtBytes(u.bytes)}</td></tr>`).join('') +
+      `<tr><td><b>合计</b></td><td class="num"></td><td class="num"><b>${fmtBytes(total)}</b></td></tr>`;
+  } catch (e) { toast('加载系统信息失败：' + e.message, true); }
+}
+
+/* ---------- 手机连接二维码 ---------- */
+let serverAddr = '';
+async function ensureServerAddr() {
+  if (serverAddr) return serverAddr;
+  try {
+    const data = await api('api/server-addresses');
+    if ((data.addresses || []).length) serverAddr = data.addresses[0];
+  } catch (_) {}
+  return serverAddr;
+}
+async function refreshQr() {
+  try {
+    const data = await api('api/server-addresses');
+    const list = data.addresses || [];
+    const select = $('#qr-address');
+    if (!list.length) {
+      select.innerHTML = '<option value="">未发现局域网地址</option>';
+      return;
+    }
+    select.innerHTML = list.map(a => `<option value="${esc(a)}">${esc(a)}</option>`).join('');
+    if (!serverAddr || !list.includes(serverAddr)) serverAddr = list[0];
+    select.value = serverAddr;
+    updateQrImages();
+  } catch (_) { /* 地址枚举失败不影响其他功能 */ }
+}
+function updateQrImages() {
+  if (!serverAddr) return;
+  const base = 'http://' + serverAddr;
+  $('#qr-server').src = 'qrcode?text=' + encodeURIComponent(base);
+  $('#qr-admin').src = 'qrcode?text=' + encodeURIComponent(base + '/admin');
+  $('#qr-server-text').textContent = base;
+  $('#qr-admin-text').textContent = base + '/admin';
+}
+$('#qr-address').addEventListener('change', e => {
+  serverAddr = e.target.value;
+  updateQrImages();
+  if (activeTab === 'apps') loadApps();
+});
+
+/* ---------- 收集与任务 ---------- */
+$('#import-btn').addEventListener('click', async () => {
+  const text = $('#import-text').value.trim();
+  if (!text) { toast('请先粘贴分享文案', true); return; }
+  try {
+    await post('api/imports', { text, title: $('#import-title').value.trim() });
+    $('#import-text').value = ''; $('#import-title').value = '';
+    toast('已加入下载队列');
+    loadTasks();
+  } catch (e) { toast('导入失败：' + e.message, true); }
+});
+
+$('#upload-btn').addEventListener('click', () => {
+  const file = $('#upload-file').files[0];
+  if (!file) { toast('请先选择视频文件', true); return; }
+  const fd = new FormData();
+  fd.append('title', $('#upload-title').value.trim());
+  fd.append('file', file);
+  const xhr = new XMLHttpRequest();
+  const bar = $('#upload-progress'), fill = bar.firstElementChild, btn = $('#upload-btn');
+  bar.style.display = 'block'; fill.style.width = '0'; btn.disabled = true;
+  xhr.upload.onprogress = e => { if (e.lengthComputable) fill.style.width = (e.loaded / e.total * 100).toFixed(1) + '%'; };
+  xhr.onload = () => {
+    btn.disabled = false;
+    let detail = '';
+    try { detail = JSON.parse(xhr.responseText).detail || ''; } catch (_) {}
+    if (xhr.status === 200) {
+      toast('上传完成，已加入处理队列');
+      $('#upload-file').value = ''; $('#upload-title').value = '';
+      setTimeout(() => bar.style.display = 'none', 800);
+      loadTasks();
+    } else {
+      toast('上传失败：' + (detail || xhr.status), true);
+      bar.style.display = 'none';
+    }
+  };
+  xhr.onerror = () => { btn.disabled = false; bar.style.display = 'none'; toast('上传中断', true); };
+  xhr.open('POST', 'api/uploads');
+  xhr.send(fd);
+});
+
+const taskOps = t => {
+  const ops = [];
+  if (t.state === 'failed') ops.push(`<button class="act" data-op="retry" data-id="${esc(t.id)}">重试</button>`);
+  if (t.state === 'queued' || t.state === 'running') ops.push(`<button class="act danger" data-op="cancel" data-id="${esc(t.id)}">取消</button>`);
+  return ops.join(' ');
+};
+async function loadTasks() {
+  try {
+    const items = await api('api/tasks');
+    $('#task-empty').hidden = items.length > 0;
+    $('#task-table tbody').innerHTML = items.map(t => {
+      const pct = t.total_bytes > 0 ? Math.min(100, t.downloaded_bytes / t.total_bytes * 100).toFixed(0) + '%' : '';
+      const size = t.total_bytes > 0 ? fmtBytes(t.downloaded_bytes) + ' / ' + fmtBytes(t.total_bytes) : '';
+      const when = (t.created_at || '').replace('T', ' ').slice(5, 16);
+      return `<tr><td class="muted">${esc(when)}</td><td>${esc(t.title)}</td><td>${badge(t.state)}</td>
+        <td>${esc(PHASE_CN[t.phase] || t.phase || '')}${pct ? ' · ' + pct : ''}${size ? `<br><span class="muted">${size}</span>` : ''}</td>
+        <td class="error-text">${esc(t.error || '')}</td><td>${taskOps(t)}</td></tr>`;
+    }).join('');
+  } catch (e) { toast('加载任务失败：' + e.message, true); }
+}
+$('#task-table').addEventListener('click', async e => {
+  const btn = e.target.closest('button[data-op]'); if (!btn) return;
+  try {
+    await post(`api/tasks/${btn.dataset.id}/${btn.dataset.op}`, {});
+    toast(btn.dataset.op === 'retry' ? '已重新排队' : '已取消');
+    loadTasks();
+  } catch (err) { toast('操作失败：' + err.message, true); }
+});
+
+/* ---------- 资源管理（分类/标签/分页/批量） ---------- */
+let videos = [];
+let libraryMeta = null;
+const libState = { offset: 0, limit: 60, total: 0, tag: '', category: '', search: '', sort: '' };
+let batchMode = false;
+const batchSelected = new Set();
+
+async function loadVideos(keepOffset = false) {
+  if (!keepOffset) libState.offset = 0;
+  try {
+    const params = new URLSearchParams({ offset: libState.offset, limit: libState.limit });
+    for (const key of ['tag', 'category', 'search', 'sort']) {
+      if (libState[key]) params.set(key, libState[key]);
+    }
+    const data = await api('api/library?' + params);
+    videos = data.items;
+    libState.total = data.total;
+    renderVideos();
+    renderPager();
+    loadVideosMeta();
+  } catch (e) { toast('加载视频失败：' + e.message, true); }
+}
+
+async function loadVideosMeta() {
+  try {
+    libraryMeta = await api('api/library/meta');
+    renderCategoryOptions();
+    renderTagBar();
+  } catch (_) { /* 元信息加载失败不影响列表 */ }
+}
+
+function renderCategoryOptions() {
+  const select = $('#video-category');
+  const current = libState.category;
+  select.innerHTML = '<option value="">全部分类</option>' +
+    (libraryMeta?.categories || []).map(c =>
+      `<option value="${esc(c.name)}">${esc(c.name)}（${c.count}）</option>`).join('');
+  select.value = current;
+}
+
+function renderTagBar() {
+  const bar = $('#tag-bar');
+  const tags = (libraryMeta?.tags || []).slice(0, 24);
+  const active = libState.tag || libState.category;
+  bar.hidden = tags.length === 0 && !active;
+  bar.innerHTML = (active
+    ? `<button class="chip ${libState.tag ? 'on' : ''}" data-tag="${esc(libState.tag)}" style="cursor:pointer">${libState.tag ? '# ' + esc(libState.tag) : ''}${libState.category ? (libState.tag ? ' ' : '') + '📁 ' + esc(libState.category) : ''} ✕</button>` : '') +
+    tags.map(t => `<button class="chip ${libState.tag === t.name ? 'on' : ''}" data-tag="${esc(t.name)}" style="cursor:pointer;border:none"># ${esc(t.name)} <span class="muted">${t.count}</span></button>`).join('');
+}
+
+function updateBatchBar() {
+  $('#batch-bar').hidden = !batchMode;
+  $('#batch-count').textContent = `已选 ${batchSelected.size} 条`;
+}
+function renderVideos() {
+  const list = videos;
+  $('#video-empty').hidden = list.length > 0;
+  $('#video-grid').innerHTML = list.map(v => {
+    const when = (v.created_at || '').slice(0, 10);
+    const dim = v.width && v.height ? `${v.width}×${v.height}` : '';
+    const size = v.size_bytes != null ? ' · ' + fmtBytes(v.size_bytes) : '';
+    const plays = (v.plays || 0) > 0 ? ` · 播放 ${v.plays}` : '';
+    const done = (v.completed_count || 0) > 0 ? ` · 完播 ${v.completed_count}` : '';
+    const picked = batchSelected.has(v.id);
+    return `<div class="vcard ${picked ? 'picked' : ''}" data-id="${esc(v.id)}">
+      ${batchMode ? `<label class="pick"><input type="checkbox" data-pick="${esc(v.id)}" ${picked ? 'checked' : ''}> 选择</label>` : ''}
+      <div class="thumb">${v.thumbnail_url ? `<img loading="lazy" src="${esc(rel(v.thumbnail_url))}" onerror="this.remove()">` : '🎞'}</div>
+      <div class="body">
+        <div class="t" title="${esc(v.title)}">${esc(v.title)}</div>
+        <div class="meta">${esc(fmtDur(v.duration))}${dim ? ' · ' + dim : ''}${size}${plays}${done} · ${esc(when)}${v.stream_state === 'ready' ? ' · HLS' : ''}</div>
+        ${batchMode ? '' : `<div class="ops">
+          <button class="act" data-op="play">预览</button>
+          <a class="act" href="${esc(rel(v.media_url))}&amp;dl=1" download>下载</a>
+          <button class="act" data-op="edit">编辑</button>
+          <button class="act danger" data-op="del">删除</button>
+        </div>`}
+      </div></div>`;
+  }).join('');
+  updateBatchBar();
+}
+function renderPager() {
+  const pages = Math.max(1, Math.ceil(libState.total / libState.limit));
+  const page = Math.floor(libState.offset / libState.limit) + 1;
+  $('#pager').hidden = libState.total === 0;
+  $('#page-info').textContent = `第 ${page} / ${pages} 页 · 共 ${libState.total} 条`;
+  $('#page-prev').disabled = page <= 1;
+  $('#page-next').disabled = page >= pages;
+}
+
+let searchTimer;
+$('#video-search').addEventListener('input', () => {
+  clearTimeout(searchTimer);
+  searchTimer = setTimeout(() => { libState.search = $('#video-search').value.trim(); loadVideos(); }, 400);
+});
+$('#video-search').addEventListener('keydown', e => {
+  if (e.key === 'Enter') { clearTimeout(searchTimer); libState.search = $('#video-search').value.trim(); loadVideos(); }
+});
+$('#video-category').addEventListener('change', e => { libState.category = e.target.value; loadVideos(); });
+$('#video-sort').addEventListener('change', e => { libState.sort = e.target.value; loadVideos(); });
+$('#tag-bar').addEventListener('click', e => {
+  const chip = e.target.closest('button[data-tag]'); if (!chip) return;
+  libState.tag = libState.tag === chip.dataset.tag ? '' : chip.dataset.tag;
+  loadVideos();
+});
+$('#video-refresh').addEventListener('click', () => loadVideos(true));
+$('#page-prev').addEventListener('click', () => { libState.offset = Math.max(0, libState.offset - libState.limit); loadVideos(true); });
+$('#page-next').addEventListener('click', () => {
+  if (libState.offset + libState.limit < libState.total) libState.offset += libState.limit;
+  loadVideos(true);
+});
+$('#video-batch-btn').addEventListener('click', () => { batchMode = true; renderVideos(); });
+$('#batch-exit').addEventListener('click', () => { batchMode = false; batchSelected.clear(); renderVideos(); });
+$('#batch-select-all').addEventListener('click', () => { videos.forEach(v => batchSelected.add(v.id)); renderVideos(); });
+$('#batch-clear').addEventListener('click', () => { batchSelected.clear(); renderVideos(); });
+$('#video-grid').addEventListener('change', e => {
+  const box = e.target.closest('input[data-pick]'); if (!box) return;
+  box.checked ? batchSelected.add(box.dataset.pick) : batchSelected.delete(box.dataset.pick);
+  box.closest('.vcard').classList.toggle('picked', box.checked);
+  updateBatchBar();
+});
+$('#video-grid').addEventListener('click', e => {
+  if (batchMode) {
+    const card = e.target.closest('.vcard');
+    if (card && !e.target.closest('a')) {
+      const id = card.dataset.id;
+      batchSelected.has(id) ? batchSelected.delete(id) : batchSelected.add(id);
+      renderVideos();
+    }
+    return;
+  }
+  const btn = e.target.closest('button[data-op]'); if (!btn) return;
+  const card = btn.closest('.vcard');
+  const v = videos.find(x => x.id === card.dataset.id); if (!v) return;
+  if (btn.dataset.op === 'play') {
+    window.open(rel(v.media_url), '_blank');
+  } else if (btn.dataset.op === 'edit') {
+    editingVideoId = v.id;
+    $('#dlg-video-title').value = v.title;
+    $('#dlg-video-desc').value = v.description || '';
+    $('#dlg-video').showModal();
+  } else if (btn.dataset.op === 'del') {
+    if (confirm(`确定删除「${v.title}」？将从全部合集中移除并清理视频文件，手机上已缓存副本不受影响。`)) deleteVideo(v.id);
+  }
+});
+$('#batch-delete').addEventListener('click', async () => {
+  const ids = [...batchSelected];
+  if (!ids.length) { toast('先选择要删除的视频', true); return; }
+  if (!confirm(`确定删除选中的 ${ids.length} 条视频？将从全部合集中移除并清理视频文件。`)) return;
+  let ok = 0, failed = 0;
+  for (const id of ids) {
+    try { await api(`api/videos/${id}`, { method: 'DELETE' }); ok++; } catch (_) { failed++; }
+  }
+  batchSelected.clear();
+  batchMode = false;
+  toast(`已删除 ${ok} 条${failed ? `，失败 ${failed} 条` : ''}`, failed > 0);
+  loadVideos();
+});
+$('#batch-collection').addEventListener('click', async () => {
+  const ids = [...batchSelected];
+  if (!ids.length) { toast('先选择要加入合集的视频', true); return; }
+  let cols = [];
+  try { cols = await api('api/collections'); } catch (e) { toast('加载合集失败：' + e.message, true); return; }
+  $('#dlg-batch-col-list').innerHTML = cols.length
+    ? cols.map(c => `<label style="display:flex;gap:8px;padding:6px 4px;align-items:center">
+        <input type="radio" name="batch-col" value="${esc(c.id)}">
+        <span>${esc(c.title)}</span><span class="muted" style="font-size:12px">${(c.videos || []).length} 条</span></label>`).join('')
+    : '<div class="muted" style="padding:6px 4px">还没有合集，填写下方名称将创建新合集</div>';
+  $('#dlg-batch-col-new').value = '';
+  const dlg = $('#dlg-batch-col');
+  dlg.showModal();
+  $('#dlg-batch-col-save').onclick = async () => {
+    const chosen = dlg.querySelector('input[name="batch-col"]:checked')?.value || '';
+    const newName = $('#dlg-batch-col-new').value.trim();
+    try {
+      if (newName) {
+        await post('api/collections', { title: newName, video_ids: ids });
+      } else if (chosen) {
+        const target = cols.find(c => c.id === chosen);
+        const merged = [...new Set([...(target.videos || []).map(v => v.id || v), ...ids])];
+        await api(`api/collections/${chosen}`, { method: 'PUT', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ title: target.title, video_ids: merged }) });
+      } else {
+        toast('选择一个合集或输入新合集名称', true);
+        return;
+      }
+      dlg.close();
+      batchMode = false;
+      batchSelected.clear();
+      toast('已加入合集');
+      loadVideos();
+    } catch (e) { toast('操作失败：' + e.message, true); }
+  };
+});
+let editingVideoId = null;
+$('#dlg-video-save').addEventListener('click', async () => {
+  const title = $('#dlg-video-title').value.trim();
+  if (!title) { toast('标题不能为空', true); return false; }
+  try {
+    await api(`api/videos/${editingVideoId}`, { method:'PATCH', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({ title, description: $('#dlg-video-desc').value }) });
+    toast('已保存');
+    loadVideos();
+  } catch (e) { toast('保存失败：' + e.message, true); return false; }
+});
+async function deleteVideo(id) {
+  try { await api(`api/videos/${id}`, { method:'DELETE' }); toast('已删除'); loadVideos(); }
+  catch (e) { toast('删除失败：' + e.message, true); }
+}
+
+/* ---------- 合集 ---------- */
+let collections = [];
+async function loadCollections() {
+  try {
+    collections = await api('api/collections');
+    if (!videos.length) videos = await api('api/videos');
+    renderCollections();
+  } catch (e) { toast('加载合集失败：' + e.message, true); }
+}
+function renderCollections() {
+  $('#col-empty').hidden = collections.length > 0;
+  $('#col-list').innerHTML = collections.map(c => {
+    const covers = (c.videos || []).slice(0, 6).map(v =>
+      v.thumbnail_url ? `<img loading="lazy" src="${esc(rel(v.thumbnail_url))}" style="width:64px;height:40px;object-fit:cover;border-radius:6px" onerror="this.remove()">` : '').join('');
+    return `<div class="panel" style="display:flex;gap:14px;align-items:center;flex-wrap:wrap">
+      <div style="flex:1;min-width:160px"><b>${esc(c.title)}</b>
+        <div class="muted" style="font-size:12px">${(c.videos || []).length} 个视频</div></div>
+      <div class="row" style="flex:2;min-width:200px">${covers}</div>
+      <div class="row" style="flex:0">
+        <button class="act fit" data-col="${esc(c.id)}" data-op="edit">编辑</button>
+        <button class="act danger fit" data-col="${esc(c.id)}" data-op="del">删除</button>
+      </div></div>`;
+  }).join('');
+}
+$('#col-list').addEventListener('click', e => {
+  const btn = e.target.closest('button[data-col]'); if (!btn) return;
+  const c = collections.find(x => x.id === btn.dataset.col); if (!c) return;
+  if (btn.dataset.op === 'edit') {
+    editingCollectionId = c.id;
+    $('#dlg-col-title-edit').textContent = '编辑合集';
+    $('#dlg-col-title').value = c.title;
+    $('#dlg-col-search').value = '';
+    dlgColSelected.clear();
+    fillVideoChecklist((c.videos || []).map(v => v.id || v));
+    $('#dlg-collection').showModal();
+  } else if (btn.dataset.op === 'del') {
+    if (confirm(`确定删除合集「${c.title}」？合集内视频不会被删除。`)) {
+      api(`api/collections/${c.id}`, { method:'DELETE' }).then(() => { toast('已删除'); loadCollections(); })
+        .catch(err => toast('删除失败：' + err.message, true));
+    }
+  }
+});
+$('#col-create').addEventListener('click', () => {
+  const title = $('#col-title').value.trim();
+  if (!title) { toast('请输入合集名称', true); return; }
+  editingCollectionId = null;
+  $('#dlg-col-title-edit').textContent = '创建合集';
+  $('#dlg-col-title').value = title;
+  $('#dlg-col-search').value = '';
+  dlgColSelected.clear();
+  fillVideoChecklist([]);
+  $('#dlg-collection').showModal();
+});
+let editingCollectionId = null;
+const dlgColSelected = new Set();
+async function fillVideoChecklist(initial = []) {
+  initial.forEach(id => dlgColSelected.add(id));
+  const params = new URLSearchParams({ limit: '100' });
+  const query = $('#dlg-col-search').value.trim();
+  if (query) params.set('search', query);
+  try {
+    const data = await api('api/library?' + params);
+    $('#dlg-col-videos').innerHTML = data.items.length ? data.items.map(v =>
+      `<label><input type="checkbox" value="${esc(v.id)}" ${dlgColSelected.has(v.id) ? 'checked' : ''}>
+       <span style="flex:1">${esc(v.title)}</span><span class="muted">${esc(fmtDur(v.duration))}</span></label>`).join('')
+      : '<div class="muted" style="padding:8px">没有匹配的视频</div>';
+  } catch (e) { toast('加载视频列表失败：' + e.message, true); }
+}
+$('#dlg-col-search').addEventListener('input', () => fillVideoChecklist());
+$('#dlg-col-videos').addEventListener('change', e => {
+  const box = e.target.closest('input[type="checkbox"]'); if (!box) return;
+  box.checked ? dlgColSelected.add(box.value) : dlgColSelected.delete(box.value);
+});
+$('#dlg-col-save').addEventListener('click', async () => {
+  const title = $('#dlg-col-title').value.trim();
+  if (!title) { toast('名称不能为空', true); return false; }
+  const ids = [...dlgColSelected];
+  try {
+    if (editingCollectionId) {
+      await api(`api/collections/${editingCollectionId}`, { method:'PUT', headers:{'Content-Type':'application/json'},
+        body: JSON.stringify({ title, video_ids: ids }) });
+    } else {
+      await post('api/collections', { title, video_ids: ids });
+      $('#col-title').value = '';
+    }
+    toast('已保存');
+    loadCollections();
+  } catch (e) { toast('保存失败：' + e.message, true); return false; }
+});
+
+/* ---------- 安装包 ---------- */
+async function loadApps() {
+  try {
+    const items = await api('api/apps');
+    await ensureServerAddr();
+    $('#app-grid').innerHTML = items.map(x => {
+      const ver = x.version ? `<span class="chip">v${esc(x.version)}</span>` : '';
+      const when = x.updated_at ? (x.updated_at.replace('T', ' ').slice(0, 16)) + ' UTC' : '';
+      const qr = x.available && serverAddr
+        ? `<figure class="qr-figure" style="margin-top:10px">
+             <img class="qr-mini" src="qrcode?text=${encodeURIComponent('http://' + serverAddr + '/api/apps/' + x.app + '/download')}" alt="扫码下载">
+             <figcaption>手机扫码直接下载</figcaption>
+           </figure>`
+        : '';
+      return `<div class="vcard" style="display:block">
+        <div class="body" style="padding:14px 16px">
+          <div style="font-weight:650;font-size:15px">${esc(x.label)} ${ver}</div>
+          <div class="meta">${x.available
+            ? `${fmtBytes(x.size_bytes)} · 构建于 ${esc(when)}`
+            : '<span class="error-text">未构建</span>'}</div>
+          ${x.available
+            ? `<a class="act primary" style="display:block;text-align:center;text-decoration:none;margin-top:8px" href="${esc(x.url)}">下载 APK</a>${qr}`
+            : `<div class="meta" style="font-size:12px">${esc(x.note || '')}</div>`}
+        </div></div>`;
+    }).join('');
+  } catch (e) { toast('加载安装包信息失败：' + e.message, true); }
+}
+
+/* ---------- 抖音配置 ---------- */
+async function loadDouyin() {
+  try {
+    const d = await api('api/config/douyin');
+    $('#dy-status').innerHTML = d.configured
+      ? `<span class="chip on">✓ 已配置</span><span class="muted" style="font-size:12px">更新于 ${esc((d.updated_at || '').replace('T', ' ').slice(0, 19))} UTC</span>`
+      : `<span class="chip off">✕ 未配置</span><span class="muted" style="font-size:12px">抖音导入前需要先保存登录 Cookie</span>`;
+  } catch (e) { $('#dy-status').textContent = '加载失败：' + e.message; }
+}
+$('#dy-save').addEventListener('click', async () => {
+  const cookie = $('#dy-cookie').value.trim();
+  if (!cookie) { toast('请先粘贴 Cookie', true); return; }
+  try {
+    await api('api/config/douyin', { method:'PUT', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ cookie }) });
+    $('#dy-cookie').value = '';
+    toast('Cookie 已保存（不会回显）');
+    loadDouyin(); loadSystem();
+  } catch (e) { toast('保存失败：' + e.message, true); }
+});
+$('#dy-test-btn').addEventListener('click', async () => {
+  const btn = $('#dy-test-btn'), out = $('#dy-test-result');
+  const url = $('#dy-test-url').value.trim();
+  if (!url) { toast('请粘贴分享链接', true); return; }
+  btn.disabled = true; out.textContent = '解析中，最长约 80 秒…';
+  try {
+    const d = await post('api/config/douyin/test', { url });
+    if (d.ok) { out.innerHTML = `<span style="color:var(--ok)">✓ 解析成功</span>：${esc(d.title || d.id)}`; }
+    else { out.innerHTML = `<span class="error-text">✕ ${esc(d.message || d.code)}</span>`; }
+  } catch (e) { out.innerHTML = `<span class="error-text">✕ ${esc(e.message)}</span>`; }
+  btn.disabled = false;
+});
+
+/* ---------- 定时刷新 ---------- */
+setInterval(() => { if (!document.hidden && activeTab === 'overview') loadSystem(); }, 20000);
+setInterval(() => { if (!document.hidden && activeTab === 'tasks') loadTasks(); }, 8000);
+
+loadSystem();
+refreshQr();
+</script>
+</body>
+</html>

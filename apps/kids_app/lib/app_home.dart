@@ -1,9 +1,12 @@
+import 'dart:async';
 import 'dart:convert';
 import 'package:crypto/crypto.dart';
 import 'package:family_api/family_api.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'package:package_info_plus/package_info_plus.dart';
 import 'package:shared_preferences/shared_preferences.dart';
+import 'package:url_launcher/url_launcher.dart';
 import 'downloads.dart';
 import 'feed.dart';
 import 'pages.dart';
@@ -75,8 +78,49 @@ class _KidsHomeState extends State<KidsHome> {
       if (connected) {
         await localState();
         await refresh();
+        unawaited(checkForUpdate());
       }
     });
+  }
+
+  /// 连接后检查服务端是否有更新的安装包；失败静默，绝不影响观看。
+  Future<void> checkForUpdate() async {
+    try {
+      final info = await PackageInfo.fromPlatform();
+      final update = await api.latestUpdate('kids');
+      if (update == null || !isNewerVersion(update.version, info.version)) {
+        return;
+      }
+      if (!mounted || error != null) return;
+      final go = await showDialog<bool>(
+            context: context,
+            builder: (context) => AlertDialog(
+              title: const Text('发现新版本'),
+              content: Text(
+                '抖音儿童版有新版本 v${update.version}，请家长帮忙下载更新。',
+              ),
+              actions: [
+                TextButton(
+                  onPressed: () => Navigator.pop(context, false),
+                  child: const Text('稍后再说'),
+                ),
+                FilledButton(
+                  onPressed: () => Navigator.pop(context, true),
+                  child: const Text('立即下载'),
+                ),
+              ],
+            ),
+          ) ??
+          false;
+      if (go && mounted) {
+        await launchUrl(
+          Uri.parse(update.url),
+          mode: LaunchMode.externalApplication,
+        );
+      }
+    } catch (_) {
+      /* 更新检查失败不打扰孩子观看。 */
+    }
   }
 
   Future<void> localState() async {
@@ -383,6 +427,9 @@ class _KidsHomeState extends State<KidsHome> {
       onLike: toggleFavorite,
       onDownload: saveVideo,
       onCollections: showCollections,
+      // 刷完全部内容后，在顶部下拉或底部上拉自动拉取服务器最新视频；
+      // 成功后新内容按推荐顺序追加，当前视频保持播放位置。
+      onLoadLatest: () => perform(refresh),
     );
   }
 

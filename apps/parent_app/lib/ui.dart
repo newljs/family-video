@@ -98,7 +98,7 @@ class SectionHeading extends StatelessWidget {
             ],
           ),
         ),
-        ?trailing,
+        if (trailing case final t?) t,
       ],
     ),
   );

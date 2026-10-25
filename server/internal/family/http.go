@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"mime"
 	"net/http"
 	"net/url"
 	"os"
@@ -83,16 +84,28 @@ func (a *App) signature(id, res string, expires int64, role string) string {
 	fmt.Fprintf(mac, "%s:%s:%d:%s", id, res, expires, role)
 	return hex.EncodeToString(mac.Sum(nil))
 }
+
+// Thumbnail bytes are immutable per video ID (generated once at import,
+// deleted with the video), so its signed URL uses a month-scale expiry bucket
+// instead of the per-response 24h signature. Keeping the URL byte-identical
+// across directory refreshes is what lets clients reuse cached thumbnails.
+const thumbURLPeriod int64 = 30 * 24 * 3600
+
+func thumbExpiry(now time.Time) int64 {
+	return now.Unix()/thumbURLPeriod*thumbURLPeriod + 2*thumbURLPeriod
+}
 func (a *App) present(v map[string]any, role string) map[string]any {
 	delete(v, "path")
 	v["published"] = int64(1) // compatibility only; there is no review state
+	id := v["id"].(string)
 	expires := time.Now().Unix() + 86400
-	for field, res := range map[string]string{"media_url": "video", "thumbnail_url": "thumbnail"} {
-		q := url.Values{"expires": {strconv.FormatInt(expires, 10)}, "role": {role}, "sig": {a.signature(v["id"].(string), res, expires, role)}}
-		v[field] = "/media/" + v["id"].(string) + "/" + res + "?" + q.Encode()
-	}
+	q := url.Values{"expires": {strconv.FormatInt(expires, 10)}, "role": {role}, "sig": {a.signature(id, "video", expires, role)}}
+	v["media_url"] = "/media/" + id + "/video?" + q.Encode()
+	thumbExpires := thumbExpiry(time.Now())
+	q = url.Values{"expires": {strconv.FormatInt(thumbExpires, 10)}, "role": {role}, "sig": {a.signature(id, "thumbnail", thumbExpires, role)}}
+	v["thumbnail_url"] = "/media/" + id + "/thumbnail?" + q.Encode()
 	if v["stream_state"] == "ready" {
-		v["stream_url"] = a.streamURL(v["id"].(string), "stream.m3u8", role, expires)
+		v["stream_url"] = a.streamURL(id, "stream.m3u8", role, expires)
 	}
 	return v
 }
@@ -125,10 +138,19 @@ func (a *App) Handler() http.Handler {
 	})
 	a.route(mux, "POST /api/tasks/{id}/retry", "admin", a.retry)
 	a.route(mux, "POST /api/tasks/{id}/cancel", "admin", a.cancelImport)
+	a.route(mux, "POST /api/watch", "child", a.reportWatch)
 	a.route(mux, "GET /api/videos", "child", func(w http.ResponseWriter, r *http.Request, role string) error {
-		items, err := query(a.DB, "SELECT * FROM videos ORDER BY created_at DESC,rowid DESC")
+		items, err := query(a.DB, `SELECT v.*, IFNULL(s.plays,0) AS plays, IFNULL(s.watched_ms,0) AS watched_ms,
+IFNULL(s.completed,0) AS completed_count, s.last_watched_at
+FROM videos v LEFT JOIN watch_stats s ON s.video_id=v.id
+ORDER BY v.created_at DESC, v.rowid DESC`)
 		if err == nil {
 			for _, v := range items {
+				if name, _ := v["path"].(string); name != "" && filepath.Base(name) == name {
+					if info, e := os.Stat(filepath.Join(a.Config.Data, "videos", name)); e == nil && !info.IsDir() {
+						v["size_bytes"] = info.Size()
+					}
+				}
 				a.present(v, role)
 			}
 			reply(w, 200, items)
@@ -142,6 +164,25 @@ func (a *App) Handler() http.Handler {
 	a.route(mux, "PUT /api/collections/{id}", "admin", a.updateCollection)
 	a.route(mux, "DELETE /api/collections/{id}", "admin", a.deleteCollection)
 	a.route(mux, "GET /media/{id}/{resource}", "public", a.media)
+	a.route(mux, "GET /api/system", "admin", a.systemInfo)
+	a.route(mux, "GET /api/config/douyin", "admin", a.douyinConfig)
+	a.route(mux, "PUT /api/config/douyin", "admin", a.saveDouyinConfig)
+	a.route(mux, "POST /api/config/douyin/test", "admin", a.testDouyinConfig)
+	a.route(mux, "GET /api/apps", "admin", a.listApps)
+	// 安装包下载对全部客户端开放：儿童端自更新也走这条路径。
+	a.route(mux, "GET /api/apps/{app}/download", "public", a.downloadApp)
+	a.route(mux, "GET /api/update/{app}", "public", a.updateCheck)
+	a.route(mux, "GET /api/library", "admin", a.libraryList)
+	a.route(mux, "GET /api/library/meta", "admin", a.libraryMeta)
+	a.route(mux, "GET /api/server-addresses", "admin", a.serverAddresses)
+	a.route(mux, "GET /qrcode", "admin", a.qrcodePNG)
+	a.route(mux, "GET /admin", "public", a.adminPage)
+	// 相对 Location 经浏览器解析，直连与 svc 代理前缀两种访问都成立
+	a.route(mux, "GET /{$}", "public", func(w http.ResponseWriter, r *http.Request, _ string) error {
+		w.Header().Set("Location", "admin")
+		w.WriteHeader(http.StatusFound)
+		return nil
+	})
 	return mux
 }
 
@@ -418,8 +459,8 @@ func (a *App) media(w http.ResponseWriter, r *http.Request, _ string) error {
 		return fail(403, "播放授权无效或过期，请刷新目录")
 	}
 
-	var name string
-	err = a.DB.QueryRow("SELECT path FROM videos WHERE id=?", id).Scan(&name)
+	var name, title string
+	err = a.DB.QueryRow("SELECT path,title FROM videos WHERE id=?", id).Scan(&name, &title)
 	if errors.Is(err, sql.ErrNoRows) {
 		return fail(404, "视频不存在或已删除")
 	}
@@ -459,7 +500,23 @@ func (a *App) media(w http.ResponseWriter, r *http.Request, _ string) error {
 		return err
 	}
 	w.Header().Set("Content-Type", contentType)
-	w.Header().Set("Cache-Control", "private, no-cache")
+	if res == "thumbnail" {
+		w.Header().Set("Cache-Control", "private, max-age="+strconv.FormatInt(thumbURLPeriod, 10))
+	} else {
+		w.Header().Set("Cache-Control", "private, no-cache")
+	}
+	if q.Get("dl") == "1" && res == "video" {
+		filename := strings.Map(func(r rune) rune {
+			if r < 32 || r == 127 || r == '/' || r == '\\' {
+				return -1
+			}
+			return r
+		}, strings.TrimSpace(title))
+		if filename == "" {
+			filename = id
+		}
+		w.Header().Set("Content-Disposition", mime.FormatMediaType("attachment", map[string]string{"filename": filename + ".mp4"}))
+	}
 	http.ServeContent(w, r, name, info.ModTime(), f)
 	return nil
 }

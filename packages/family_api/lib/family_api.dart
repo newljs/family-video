@@ -4,6 +4,7 @@ import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:http/http.dart' as http;
 import 'package:shared_preferences/shared_preferences.dart';
 export 'package:family_models/family_models.dart';
+export 'thumbnail.dart';
 
 class FamilyApiException implements Exception {
   final String message;
@@ -11,6 +12,37 @@ class FamilyApiException implements Exception {
   const FamilyApiException(this.message, {this.statusCode});
   @override
   String toString() => message;
+}
+
+/// 服务端发布的客户端安装包信息。
+class AppUpdate {
+  final String version;
+  final String url;
+  final int sizeBytes;
+  const AppUpdate({
+    required this.version,
+    required this.url,
+    required this.sizeBytes,
+  });
+}
+
+List<int> _versionParts(String version) {
+  final parts = <int>[];
+  for (final segment in version.trim().split(RegExp('[+.]'))) {
+    parts.add(int.tryParse(segment.trim()) ?? 0);
+  }
+  return parts;
+}
+
+/// 比较 "0.8.1+12" 形式版本号，服务端版本高于本地返回 true。
+bool isNewerVersion(String candidate, String current) {
+  final next = _versionParts(candidate), local = _versionParts(current);
+  for (var i = 0; i < next.length || i < local.length; i++) {
+    final a = i < next.length ? next[i] : 0;
+    final b = i < local.length ? local[i] : 0;
+    if (a != b) return a > b;
+  }
+  return false;
 }
 
 String friendlyError(Object error) {
@@ -139,5 +171,26 @@ class FamilyApi {
         await req.send(),
       ).timeout(const Duration(minutes: 15)),
     );
+  }
+
+  /// 查询服务端最新安装包；服务端未构建或版本过低（无此接口）时返回 null，
+  /// 永不抛错，避免更新检查干扰正常使用。
+  Future<AppUpdate?> latestUpdate(String app) async {
+    try {
+      final data = await request('GET', '/api/update/$app');
+      if (data is! Map ||
+          data['available'] != true ||
+          data['version'] == null ||
+          data['url'] == null) {
+        return null;
+      }
+      return AppUpdate(
+        version: '${data['version']}',
+        url: '$server/${data['url']}',
+        sizeBytes: (data['size_bytes'] as num?)?.toInt() ?? 0,
+      );
+    } catch (_) {
+      return null;
+    }
   }
 }

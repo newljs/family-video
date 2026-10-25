@@ -1,5 +1,7 @@
+import 'package:family_api/family_api.dart';
 import 'package:flutter/material.dart';
 import 'feed.dart';
+import 'scanner_page.dart';
 
 const kidsSurface = Color(0xff141619);
 
@@ -205,6 +207,25 @@ class KidsConnectionPage extends StatelessWidget {
                           filled: true,
                           fillColor: Colors.black26,
                           contentPadding: const EdgeInsets.all(16),
+                          suffixIcon: IconButton(
+                            tooltip: '扫码连接',
+                            icon: const Icon(
+                              Icons.qr_code_scanner_rounded,
+                              color: Colors.white70,
+                            ),
+                            onPressed: busy
+                                ? null
+                                : () async {
+                                    final addr = await scanServerAddress(
+                                      context,
+                                    );
+                                    if (addr == null || !context.mounted) {
+                                      return;
+                                    }
+                                    address.text = addr;
+                                    onConnect();
+                                  },
+                          ),
                           border: OutlineInputBorder(
                             borderRadius: BorderRadius.circular(12),
                             borderSide: const BorderSide(color: Colors.white12),
@@ -350,8 +371,8 @@ class KidsMediaTile extends StatelessWidget {
                       color: Colors.white38,
                     ),
                   ),
-                  if (video['thumbnail_url'] != null && !offline)
-                    Image.network(
+                  if (video['thumbnail_url'] != null)
+                    CachedThumbnail(
                       url(video['thumbnail_url']),
                       fit: BoxFit.cover,
                       errorBuilder: (_, _, _) => const Icon(

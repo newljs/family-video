@@ -11,22 +11,26 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"time"
 )
 
 //go:embed schema.sql
 var schema string
 
 type App struct {
-	Config        Config
-	DB            *sql.DB
-	FreeSpace     func(string) (uint64, error)
-	DownloadVideo func(context.Context, string, string) (string, error)
-	ResolveVideo  func(context.Context, string) (resolvedVideo, error)
-	DownloadHTTP  *http.Client
-	cacheMu       sync.Mutex
-	mediaMu       sync.Mutex
-	taskMu        sync.Mutex
-	activeTasks   map[string]context.CancelFunc
+	Config         Config
+	DB             *sql.DB
+	FreeSpace      func(string) (uint64, error)
+	DownloadVideo  func(context.Context, string, string) (string, error)
+	ResolveVideo   func(context.Context, string) (resolvedVideo, error)
+	DownloadHTTP   *http.Client
+	HWEncoderProbe func(context.Context) string
+	startedAt      time.Time
+	cacheMu        sync.Mutex
+	mediaMu        sync.Mutex
+	taskMu         sync.Mutex
+	activeTasks    map[string]context.CancelFunc
+	enc            encoderCache
 }
 
 func New(c Config) (*App, error) {
@@ -49,7 +53,7 @@ func New(c Config) (*App, error) {
 		db.Close()
 		return nil, err
 	}
-	if version > 3 {
+	if version > 4 {
 		db.Close()
 		return nil, fmt.Errorf("数据库版本 %d 高于当前支持版本，拒绝降级", version)
 	}
@@ -57,7 +61,7 @@ func New(c Config) (*App, error) {
 		db.Close()
 		return nil, err
 	}
-	app := &App{Config: c, DB: db, FreeSpace: freeSpace, activeTasks: make(map[string]context.CancelFunc)}
+	app := &App{Config: c, DB: db, FreeSpace: freeSpace, activeTasks: make(map[string]context.CancelFunc), startedAt: time.Now()}
 	app.ResolveVideo = app.resolveF2
 	app.DownloadHTTP = newDownloadClient()
 	app.DownloadVideo = app.download

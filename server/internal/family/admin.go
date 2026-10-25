@@ -1,0 +1,326 @@
+package family
+
+// Web 管理台：系统运行信息、抖音 Cookie 配置与内嵌单页界面。
+// Cookie 只写不读：任何接口不得返回凭证内容或签名源地址。
+
+import (
+	"context"
+	"embed"
+	"errors"
+	"io/fs"
+	"mime"
+	"net/http"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"sort"
+	"strings"
+	"time"
+)
+
+//go:embed admin.html
+var adminFiles embed.FS
+
+const serverVersion = "0.7.0"
+
+// f2ConfigPath 返回生效的抖音下载配置文件路径，与 resolver.go 的读取逻辑一致。
+func (a *App) f2ConfigPath() string {
+	if a.Config.F2Config != "" {
+		if filepath.IsAbs(a.Config.F2Config) {
+			return a.Config.F2Config
+		}
+		return filepath.Join(a.Config.Root, a.Config.F2Config)
+	}
+	return filepath.Join(a.Config.Data, "private", "f2.yaml")
+}
+
+func (a *App) adminPage(w http.ResponseWriter, r *http.Request, _ string) error {
+	page, err := adminFiles.ReadFile("admin.html")
+	if err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	w.Header().Set("Cache-Control", "no-store")
+	w.Write(page)
+	return nil
+}
+
+type dirUsage struct {
+	Name  string `json:"name"`
+	Bytes int64  `json:"bytes"`
+	Files int    `json:"files"`
+}
+
+func dirUsageOf(root string) dirUsage {
+	usage := dirUsage{Name: filepath.Base(root)}
+	err := filepath.WalkDir(root, func(_ string, d fs.DirEntry, err error) error {
+		if err != nil {
+			if d != nil && d.IsDir() {
+				return fs.SkipDir
+			}
+			return nil
+		}
+		if d.IsDir() {
+			return nil
+		}
+		if info, e := d.Info(); e == nil {
+			usage.Bytes += info.Size()
+			usage.Files++
+		}
+		return nil
+	})
+	if err != nil {
+		return usage
+	}
+	return usage
+}
+
+func toolAvailable(name string) bool {
+	_, err := exec.LookPath(name)
+	return err == nil
+}
+
+// downloaderPythonPath 与 resolver.go 的解析逻辑保持一致。
+func (a *App) downloaderPythonPath() string {
+	if a.Config.ResolverPython != "" {
+		return a.Config.ResolverPython
+	}
+	return filepath.Join(filepath.Dir(a.Config.F2Exe), "python")
+}
+
+func (a *App) systemInfo(w http.ResponseWriter, r *http.Request, _ string) error {
+	info := map[string]any{
+		"version":    serverVersion,
+		"backend":    "go",
+		"data_dir":   a.Config.Data,
+		"started_at": a.startedAt.UTC().Format(time.RFC3339),
+	}
+	if a.startedAt.After(time.Time{}) {
+		info["uptime_seconds"] = int64(time.Since(a.startedAt).Seconds())
+	}
+	if free, err := a.FreeSpace(a.Config.Data); err == nil {
+		info["disk_free_bytes"] = free
+	}
+
+	names := []string{"database", "videos", "thumbnails", "streams", "temp", "download-cache"}
+	usages := make([]dirUsage, 0, len(names))
+	var total int64
+	for _, name := range names {
+		u := dirUsageOf(filepath.Join(a.Config.Data, name))
+		total += u.Bytes
+		usages = append(usages, u)
+	}
+	sort.Slice(usages, func(i, j int) bool { return usages[i].Bytes > usages[j].Bytes })
+	info["usage"] = usages
+	info["usage_total_bytes"] = total
+
+	var videoCount int
+	a.DB.QueryRow("SELECT COUNT(*) FROM videos").Scan(&videoCount)
+	info["video_count"] = videoCount
+
+	states := map[string]int{}
+	if rows, err := a.DB.Query("SELECT state, COUNT(*) FROM tasks GROUP BY state"); err == nil {
+		for rows.Next() {
+			var state string
+			var n int
+			if rows.Scan(&state, &n) == nil {
+				states[state] = n
+			}
+		}
+		rows.Close()
+	}
+	info["tasks"] = states
+
+	douyinConfigured := false
+	if st, err := os.Stat(a.f2ConfigPath()); err == nil && st.Mode().IsRegular() {
+		douyinConfigured = true
+	}
+	python := a.downloaderPythonPath()
+	_, pythonMissing := os.Stat(python)
+	info["tools"] = map[string]any{
+		"ffmpeg":           toolAvailable("ffmpeg"),
+		"ffprobe":          toolAvailable("ffprobe"),
+		"downloader":       pythonMissing == nil,
+		"douyin_configured": douyinConfigured,
+	}
+	reply(w, 200, info)
+	return nil
+}
+
+func (a *App) douyinConfig(w http.ResponseWriter, r *http.Request, _ string) error {
+	info := map[string]any{"configured": false, "updated_at": ""}
+	if st, err := os.Stat(a.f2ConfigPath()); err == nil && st.Mode().IsRegular() {
+		info["configured"] = true
+		info["updated_at"] = st.ModTime().UTC().Format(time.RFC3339)
+	}
+	reply(w, 200, info)
+	return nil
+}
+
+func (a *App) saveDouyinConfig(w http.ResponseWriter, r *http.Request, _ string) error {
+	var b struct{ Cookie string }
+	if err := decode(r, &b); err != nil {
+		return err
+	}
+	cookie := strings.TrimSpace(b.Cookie)
+	cookie = strings.ReplaceAll(cookie, "\r", "")
+	cookie = strings.ReplaceAll(cookie, "\n", " ")
+	if cookie == "" {
+		return fail(400, "Cookie 不能为空")
+	}
+	if len(cookie) > 65536 {
+		return fail(400, "Cookie 内容过长")
+	}
+	path := a.f2ConfigPath()
+	if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
+		return err
+	}
+	// 单引号 YAML 标量：内部单引号按 YAML 规则翻倍转义。
+	body := "# 由网页管理台生成。请勿提交到仓库或发送给他人。\ndouyin:\n  cookie: '" + strings.ReplaceAll(cookie, "'", "''") + "'\n"
+	tmp := path + ".tmp"
+	if err := os.WriteFile(tmp, []byte(body), 0600); err != nil {
+		return err
+	}
+	if err := os.Rename(tmp, path); err != nil {
+		os.Remove(tmp)
+		return err
+	}
+	reply(w, 200, map[string]bool{"ok": true})
+	return nil
+}
+
+// testDouyinConfig 用一条真实分享链接验证登录配置，只返回标题等安全字段。
+func (a *App) testDouyinConfig(w http.ResponseWriter, r *http.Request, _ string) error {
+	var b struct{ URL string }
+	if err := decode(r, &b); err != nil {
+		return err
+	}
+	source, err := ExtractURL(b.URL)
+	if err != nil {
+		reply(w, 200, map[string]any{"ok": false, "code": "invalid_url", "message": "请粘贴抖音分享链接"})
+		return nil
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), 80*time.Second)
+	defer cancel()
+	video, err := a.ResolveVideo(ctx, source)
+	if err != nil {
+		code, message := "resolve_failed", "暂时无法解析作品"
+		var de *downloadError
+		if errors.As(err, &de) {
+			code, message = de.Code, de.Message
+		}
+		reply(w, 200, map[string]any{"ok": false, "code": code, "message": message})
+		return nil
+	}
+	reply(w, 200, map[string]any{"ok": true, "id": video.ID, "title": video.Title, "sources": len(video.URLs)})
+	return nil
+}
+
+// ---------- 客户端安装包 ----------
+
+var appDefs = []struct{ App, Label, Dir string }{
+	{"parent", "家长端", "parent_app"},
+	{"kids", "儿童端（抖音儿童版）", "kids_app"},
+}
+
+func apkPath(root, dir string) string {
+	base := filepath.Join(root, "apps", dir, "build", "app", "outputs", "flutter-apk")
+	for _, name := range []string{"app-release.apk", "app-debug.apk"} {
+		if p := filepath.Join(base, name); fileExists(p) {
+			return p
+		}
+	}
+	return filepath.Join(base, "app-debug.apk")
+}
+
+func fileExists(path string) bool {
+	info, err := os.Stat(path)
+	return err == nil && !info.IsDir()
+}
+
+func pubspecVersion(root, dir string) string {
+	data, err := os.ReadFile(filepath.Join(root, "apps", dir, "pubspec.yaml"))
+	if err != nil {
+		return ""
+	}
+	for _, line := range strings.Split(string(data), "\n") {
+		if v, ok := strings.CutPrefix(strings.TrimSpace(line), "version:"); ok {
+			return strings.TrimSpace(v)
+		}
+	}
+	return ""
+}
+
+// updateCheck 供客户端 App 启动时查询最新版本；任何角色可访问。
+func (a *App) updateCheck(w http.ResponseWriter, r *http.Request, _ string) error {
+	for _, def := range appDefs {
+		if def.App != r.PathValue("app") {
+			continue
+		}
+		item := map[string]any{"app": def.App, "label": def.Label, "available": false}
+		if v := pubspecVersion(a.Config.Root, def.Dir); v != "" {
+			item["version"] = v
+		}
+		if info, err := os.Stat(apkPath(a.Config.Root, def.Dir)); err == nil && !info.IsDir() {
+			item["available"] = true
+			item["size_bytes"] = info.Size()
+			item["url"] = "api/apps/" + def.App + "/download"
+		}
+		reply(w, 200, item)
+		return nil
+	}
+	return fail(404, "未知的客户端类型")
+}
+
+func (a *App) listApps(w http.ResponseWriter, r *http.Request, _ string) error {
+	result := make([]map[string]any, 0, len(appDefs))
+	for _, def := range appDefs {
+		item := map[string]any{"app": def.App, "label": def.Label, "available": false}
+		if v := pubspecVersion(a.Config.Root, def.Dir); v != "" {
+			item["version"] = v
+		}
+		path := apkPath(a.Config.Root, def.Dir)
+		if info, err := os.Stat(path); err == nil && !info.IsDir() {
+			item["available"] = true
+			item["size_bytes"] = info.Size()
+			item["updated_at"] = info.ModTime().UTC().Format(time.RFC3339)
+			item["url"] = "api/apps/" + def.App + "/download"
+		} else {
+			item["note"] = "尚未构建：在装有 Flutter 环境的机器上运行 scripts/build-android.ps1，产物出现在 apps/" + def.Dir + "/build/app/outputs/flutter-apk/"
+		}
+		result = append(result, item)
+	}
+	reply(w, 200, result)
+	return nil
+}
+
+func (a *App) downloadApp(w http.ResponseWriter, r *http.Request, _ string) error {
+	app := r.PathValue("app")
+	for _, def := range appDefs {
+		if def.App != app {
+			continue
+		}
+		path := apkPath(a.Config.Root, def.Dir)
+		f, err := os.Open(path)
+		if os.IsNotExist(err) {
+			return fail(404, "安装包尚未构建，请先运行 scripts/build-android.ps1")
+		}
+		if err != nil {
+			return err
+		}
+		defer f.Close()
+		info, err := f.Stat()
+		if err != nil {
+			return err
+		}
+		name := "family-video-" + def.App
+		if v := pubspecVersion(a.Config.Root, def.Dir); v != "" {
+			name += "-" + v
+		}
+		w.Header().Set("Content-Type", "application/vnd.android.package-archive")
+		w.Header().Set("Content-Disposition", mime.FormatMediaType("attachment", map[string]string{"filename": name + ".apk"}))
+		http.ServeContent(w, r, filepath.Base(path), info.ModTime(), f)
+		return nil
+	}
+	return fail(404, "未知的客户端类型")
+}

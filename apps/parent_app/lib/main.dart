@@ -4,10 +4,14 @@ import 'package:family_api/family_api.dart';
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'package:package_info_plus/package_info_plus.dart';
+import 'package:url_launcher/url_launcher.dart';
 import 'ui.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:video_player/video_player.dart';
+import 'collections_panel.dart';
 import 'library_panel.dart';
+import 'scanner_page.dart';
 import 'collection_editor.dart';
 
 void main() => runApp(
@@ -36,7 +40,6 @@ class _ParentHomeState extends State<ParentHome> {
   bool connected = false, busy = false;
   String? error;
   int tab = 0;
-  final selected = <String>[];
 
   @override
   void initState() {
@@ -54,8 +57,51 @@ class _ParentHomeState extends State<ParentHome> {
       if (api.server.isNotEmpty) {
         await refresh();
         connected = true;
+        unawaited(checkForUpdate());
       }
     });
+  }
+
+  /// 连接后检查服务端是否有更新的家长端安装包；失败静默。
+  Future<void> checkForUpdate() async {
+    try {
+      final info = await PackageInfo.fromPlatform();
+      final update = await api.latestUpdate('parent');
+      if (update == null || !isNewerVersion(update.version, info.version)) {
+        return;
+      }
+      if (!mounted || error != null) return;
+      final go = await showDialog<bool>(
+            context: context,
+            builder: (context) => AlertDialog(
+              title: const Text('发现新版本'),
+              content: Text(
+                '家长端有新版本 v${update.version}'
+                '${update.sizeBytes > 0 ? '（约 ${(update.sizeBytes / 1024 / 1024).toStringAsFixed(1)} MB）' : ''}，'
+                '建议下载更新。',
+              ),
+              actions: [
+                TextButton(
+                  onPressed: () => Navigator.pop(context, false),
+                  child: const Text('稍后再说'),
+                ),
+                FilledButton(
+                  onPressed: () => Navigator.pop(context, true),
+                  child: const Text('立即下载'),
+                ),
+              ],
+            ),
+          ) ??
+          false;
+      if (go && mounted) {
+        await launchUrl(
+          Uri.parse(update.url),
+          mode: LaunchMode.externalApplication,
+        );
+      }
+    } catch (_) {
+      /* 更新检查失败不影响管理功能。 */
+    }
   }
 
   Future<void> perform(Future<void> Function() action) async {
@@ -100,7 +146,6 @@ class _ParentHomeState extends State<ParentHome> {
       taskPolling?.cancel();
       taskPolling = null;
     }
-    selected.removeWhere((id) => !videos.any((v) => v['id'] == id));
   }
 
   Future<void> persistInbox() async => (await SharedPreferences.getInstance())
@@ -228,17 +273,88 @@ class _ParentHomeState extends State<ParentHome> {
             alignment: Alignment.topCenter,
             child: ConstrainedBox(
               constraints: const BoxConstraints(maxWidth: 860),
-              child: RefreshIndicator(
-                onRefresh: connected && !busy
-                    ? () => perform(refresh)
-                    : () async {},
-                child: ListView(
-                  key: PageStorageKey('parent-$tab'),
-                  physics: const AlwaysScrollableScrollPhysics(),
-                  padding: const EdgeInsets.fromLTRB(18, 12, 18, 24),
-                  children: page(),
-                ),
-              ),
+              child: tab == 1
+                  ? LibraryPanel(
+                      videos: videos,
+                      collections: collections,
+                      busy: busy,
+                      url: (path) => api.uri(path).toString(),
+                      onPreview: (v) => Navigator.push(
+                        context,
+                        MaterialPageRoute<void>(
+                          builder: (_) => Preview(
+                            url: api.uri(v['media_url']).toString(),
+                          ),
+                        ),
+                      ),
+                      onEdit: (v, metadata) => perform(() async {
+                        await api.request('PATCH', '/api/videos/${v['id']}', metadata);
+                        await refresh();
+                      }),
+                      onDelete: (v) => perform(() async {
+                        await api.request('DELETE', '/api/videos/${v['id']}');
+                        await refresh();
+                      }),
+                      onBatchDelete: (ids) => perform(() async {
+                        for (final id in ids) {
+                          await api.request('DELETE', '/api/videos/$id');
+                        }
+                        await refresh();
+                      }),
+                      onBatchCollect: (ids, collectionId, newTitle) =>
+                          perform(() async {
+                        if (newTitle.isNotEmpty) {
+                          await api.request('POST', '/api/collections', {
+                            'title': newTitle,
+                            'video_ids': ids,
+                          });
+                        } else if (collectionId != null) {
+                          final target = collections.firstWhere(
+                            (c) => '${c['id']}' == collectionId,
+                          );
+                          final merged = <String>{
+                            ...((target['videos'] as List)
+                                .map((v) => '${v['id']}')),
+                            ...ids,
+                          };
+                          await api.request(
+                            'PUT',
+                            '/api/collections/$collectionId',
+                            {
+                              'title': target['title'],
+                              'video_ids': merged.toList(),
+                            },
+                          );
+                        }
+                        await refresh();
+                      }),
+                    )
+                  : tab == 2
+                  ? CollectionsPanel(
+                      videos: videos,
+                      collections: collections,
+                      busy: busy,
+                      onCreate: (title, ids) => perform(() async {
+                        await api.request('POST', '/api/collections', {
+                          'title': title,
+                          'video_ids': ids,
+                        });
+                        await refresh();
+                      }),
+                      onEdit: editCollection,
+                      onDelete: deleteCollection,
+                    )
+                  : RefreshIndicator(
+                      onRefresh: connected && !busy
+                          ? () => perform(refresh)
+                          : () async {},
+                      child: ListView(
+                        key: PageStorageKey('parent-$tab'),
+                        physics: const AlwaysScrollableScrollPhysics(),
+                        padding: const EdgeInsets.fromLTRB(18, 12, 18, 24),
+                        children: page(),
+                      ),
+                    ),
             ),
           ),
         ),
@@ -279,10 +395,26 @@ class _ParentHomeState extends State<ParentHome> {
                 controller: address,
                 keyboardType: TextInputType.url,
                 autocorrect: false,
-                decoration: const InputDecoration(
+                decoration: InputDecoration(
                   labelText: '服务器地址',
                   hintText: 'http://电脑IP:8765',
-                  prefixIcon: Icon(Icons.dns_outlined),
+                  prefixIcon: const Icon(Icons.dns_outlined),
+                  suffixIcon: IconButton(
+                    tooltip: '扫码连接',
+                    icon: const Icon(Icons.qr_code_scanner_rounded),
+                    onPressed: busy
+                        ? null
+                        : () async {
+                            final addr = await scanServerAddress(context);
+                            if (addr == null || !mounted) return;
+                            address.text = addr;
+                            await perform(() async {
+                              await api.save(address.text);
+                              await refresh();
+                              connected = true;
+                            });
+                          },
+                  ),
                 ),
               ),
               const SizedBox(height: 16),
@@ -497,12 +629,13 @@ class _ParentHomeState extends State<ParentHome> {
                     return;
                   }
                   perform(() async {
-                    final file = await FilePicker.pickFile(
+                    final file = await FilePicker.pickFiles(
                       type: FileType.custom,
                       allowedExtensions: ['mp4', 'mov', 'm4v'],
                     );
-                    if (file?.path != null) {
-                      await api.upload(file!.path!, '');
+                    final picked = file?.files.single.path;
+                    if (picked != null) {
+                      await api.upload(picked, '');
                       await refresh();
                     }
                   });
@@ -540,121 +673,11 @@ class _ParentHomeState extends State<ParentHome> {
         ),
       ];
     }
-    if (tab == 1) {
-      return [
-        LibraryPanel(
-          videos: videos,
-          busy: busy,
-          url: (path) => api.uri(path).toString(),
-          onPreview: (v) => Navigator.push(
-            context,
-            MaterialPageRoute<void>(
-              builder: (_) => Preview(url: api.uri(v['media_url']).toString()),
-            ),
-          ),
-          onEdit: (v, metadata) => perform(() async {
-            await api.request('PATCH', '/api/videos/${v['id']}', metadata);
-            await refresh();
-          }),
-          onDelete: (v) => perform(() async {
-            await api.request('DELETE', '/api/videos/${v['id']}');
-            await refresh();
-          }),
-        ),
-      ];
+    if (tab == 1 || tab == 2) {
+      // 视频库与合集各自使用虚拟化面板（见 body 分发），page() 只负责其余页签。
+      return const [];
     }
-    return [
-      const SectionHeading('家庭合集', subtitle: '按主题整理内容，勾选顺序就是播放顺序。'),
-      if (videos.isEmpty)
-        const PanelCard(
-          child: EmptyPanel(
-            icon: Icons.playlist_add,
-            title: '先收集一些视频',
-            message: '视频入库后，就能把它们整理成孩子喜欢的合集。',
-          ),
-        ),
-      ...videos.map(
-        (v) => CheckboxListTile(
-          title: Text('${v['title']}'),
-          value: selected.contains(v['id']),
-          onChanged: busy
-              ? null
-              : (value) => setState(() {
-                  if (value == true) {
-                    selected.add(v['id']);
-                  } else {
-                    selected.remove(v['id']);
-                  }
-                }),
-        ),
-      ),
-      FilledButton(
-        onPressed: busy || selected.isEmpty
-            ? null
-            : () async {
-                final controller = TextEditingController();
-                final name = await showDialog<String>(
-                  context: context,
-                  builder: (context) => AlertDialog(
-                    title: const Text('新建合集'),
-                    content: TextField(
-                      controller: controller,
-                      autofocus: true,
-                      decoration: const InputDecoration(labelText: '合集名称'),
-                    ),
-                    actions: [
-                      TextButton(
-                        onPressed: () => Navigator.pop(context),
-                        child: const Text('取消'),
-                      ),
-                      FilledButton(
-                        onPressed: () =>
-                            Navigator.pop(context, controller.text.trim()),
-                        child: const Text('创建'),
-                      ),
-                    ],
-                  ),
-                );
-                if (name != null && name.isNotEmpty) {
-                  await perform(() async {
-                    await api.request('POST', '/api/collections', {
-                      'title': name,
-                      'video_ids': selected.toList(),
-                    });
-                    selected.clear();
-                    await refresh();
-                  });
-                }
-              },
-        child: Text('用选中的 ${selected.length} 条创建合集'),
-      ),
-      const SizedBox(height: 24),
-      const SectionHeading('已创建的合集'),
-      ...collections.map(
-        (c) => ListTile(
-          leading: const Icon(Icons.playlist_play),
-          title: Text('${c['title']}'),
-          subtitle: Text('${(c['videos'] as List).length} 条视频'),
-          onTap: busy
-              ? null
-              : () => editCollection(Map<String, dynamic>.from(c)),
-          trailing: PopupMenuButton<String>(
-            enabled: !busy,
-            onSelected: (value) {
-              if (value == 'edit') {
-                editCollection(Map<String, dynamic>.from(c));
-              } else {
-                deleteCollection(Map<String, dynamic>.from(c));
-              }
-            },
-            itemBuilder: (_) => const [
-              PopupMenuItem(value: 'edit', child: Text('编辑与排序')),
-              PopupMenuItem(value: 'delete', child: Text('删除合集')),
-            ],
-          ),
-        ),
-      ),
-    ];
+    return const [];
   }
 
   Future<void> editCollection(Map<String, dynamic> collection) async {

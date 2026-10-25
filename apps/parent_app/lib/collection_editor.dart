@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'collections_panel.dart';
 
 class CollectionEditor extends StatefulWidget {
   final Map<String, dynamic> collection;
@@ -87,7 +88,10 @@ class _CollectionEditorState extends State<CollectionEditor> {
               : ReorderableListView.builder(
                   buildDefaultDragHandles: false,
                   itemCount: ids.length,
-                  onReorderItem: move,
+                  onReorder: (oldIndex, newIndex) {
+                    if (oldIndex < newIndex) newIndex -= 1;
+                    move(oldIndex, newIndex);
+                  },
                   itemBuilder: (context, i) => ListTile(
                     key: ValueKey(ids[i]),
                     leading: ReorderableDragStartListener(
@@ -128,47 +132,14 @@ class _CollectionEditorState extends State<CollectionEditor> {
     ),
   );
   Future<void> addVideos() async {
-    final chosen = <String>{};
-    final result = await showDialog<bool>(
-      context: context,
-      builder: (context) => StatefulBuilder(
-        builder: (context, update) => AlertDialog(
-          title: const Text('添加视频'),
-          content: SizedBox(
-            width: 440,
-            height: 340,
-            child: ListView(
-              children: widget.videos
-                  .where((v) => !ids.contains(v['id']))
-                  .map(
-                    (v) => CheckboxListTile(
-                      title: Text('${v['title']}'),
-                      value: chosen.contains(v['id']),
-                      onChanged: (value) => update(() {
-                        if (value == true) {
-                          chosen.add(v['id']);
-                        } else {
-                          chosen.remove(v['id']);
-                        }
-                      }),
-                    ),
-                  )
-                  .toList(),
-            ),
-          ),
-          actions: [
-            TextButton(
-              onPressed: () => Navigator.pop(context, false),
-              child: const Text('取消'),
-            ),
-            FilledButton(
-              onPressed: () => Navigator.pop(context, true),
-              child: Text('添加 ${chosen.length} 条'),
-            ),
-          ],
-        ),
-      ),
+    final chosen = await showVideoPicker(
+      context,
+      widget.videos,
+      excludeIds: ids.toSet(),
+      title: '添加视频',
     );
-    if (result == true && mounted) setState(() => ids.addAll(chosen));
+    if (chosen != null && chosen.isNotEmpty && mounted) {
+      setState(() => ids.addAll(chosen));
+    }
   }
 }
