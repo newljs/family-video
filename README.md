@@ -46,6 +46,10 @@ Ctrl+C 停止服务，执行中任务下次启动恢复。`-worker=false` 可仅
 - 儿童：黑底全屏推荐流、上下滑动、点击暂停、双击喜欢、喜欢/缓存/合集操作，以及合集、离线、喜欢、个人页。横竖视频按比例居中，标题和播放进度位于底部。播放增强：**长按屏幕 2 倍速**（松开恢复），**左右拖动快进/快退**（居中显示目标时间预览，一屏宽最多两分钟，松手定位；与上下滑切换、双击喜欢、底部进度条拖动互不影响）。**内容刷完后**在第一条继续下拉或最后一条继续上拉，自动拉取服务器最新视频（新内容按推荐顺序追加，当前视频保持播放位置；单次拖动只触发一次，失败时顶部横幅提示且播放不中断）。
 
 **推荐排序与观看统计**：儿童端推荐流分桶排序——完全没播过的最上面（桶内随机、每次启动重新洗牌），播过未完播的居中，已完播的最后；观看过程中按采样累计每个视频的观看时长、播放次数与完播情况，每 30 秒批量上报服务端（`watch_stats` 表，数据库 schema v4），失败保留重试、不阻塞播放。该数据同时驱动排序与家长分析。
+
+**每日观看时长**：家长端「连接设置 → 儿童观看时长」设定孩子每天可观看的总时长（0 表示不限制，滑动条 5–240 分钟），并可指定一个合集作为「额度用完后可看」的内容，经 `PUT /api/settings/time-limit` 保存；儿童端经 `GET /api/settings/time-limit` 读取限额与今日已看。时长以服务端按天累计的真实观看为准（`watch_days` 表，数据库 schema v5，超过一个月的旧日期自动清理），同一天多台设备共享额度。播放页顶部在额度充足时显示剩余时间小角标（最后 5 分钟变为红色）。
+
+**安静模式（额度用完，无感知）**：达到每日限额后不弹任何提示、不暂停播放——当前视频自然播完，之后能刷到的只剩家长指定的那个合集：服务端对儿童角色的 `/api/videos` 与 `/api/collections` 静默过滤为该合集（未指定合集则整体隐藏，孩子只会觉得"没有内容了"），搜索、喜欢、离线页签同步收缩；家长角色始终看得到完整视频库。换天后额度重置，目录自动恢复；服务端不可达时儿童端沿用最近一次缓存的限额继续安静收缩，旧服务端无此接口时按不限制处理。注意：设备上已缓存的离线文件在安静模式下不再展示，但文件本身不会被删除。原有的单次连续观看 20 分钟休息提示保留，额度已耗尽时不再叠加显示。
 - 刷新失败保留已有列表，搜索包含缓存。打开搜索播放页会暂停首页播放器，返回恢复原来的播放意图。
 - 处理中任务每 8 秒刷新；应用进入后台或任务结束后停止轮询。
 - 缩略图按视频 ID 在设备缓存目录落盘（family_api 的 `CachedThumbnail`）。服务端为缩略图签发月级稳定签名 URL 并返回 `Cache-Control: max-age`（内容随视频 ID 不变），目录刷新、签名轮换和 App 重启不再重复下载，离线时直接显示缓存封面；缓存目录按 60 天清理已删视频残留。管理台浏览器同样受益于该缓存头。
@@ -126,7 +130,26 @@ go -C server vet ./...
 
 两端应用及共享 API 包分别执行 `flutter analyze` 和 `flutter test`。测试加 `--update-goldens --dart-define=CAPTURE_UI=true` 可生成 runtime/ui 截图；截图用测试视频背景。
 
-v0.9 变更的服务端部分（`/api/update`、APK 下载公开化）已通过 Go 测试并在 macOS 服务端部署验证；**Flutter 端改动（应用内更新、儿童端播放手势）尚未在装有 Flutter 3.44 的构建环境运行 `flutter analyze` / `flutter test` / 构建 APK，首次构建时如遇 package_info_plus / url_launcher 版本约束问题，可在两端 pubspec 中放宽后 `flutter pub upgrade`**。真机上的长按倍速与拖动快进表现仍待验收。本轮缩略图磁盘缓存（family_api 新增 `path_provider`，两端调用点与 pubspec.lock 需重新 `flutter pub get`）与上述改动同属未在 Flutter 3.44 环境验证的范围。重编码硬件加速在无 ffmpeg 的开发机上仅通过单元测试（桩探测器、编造编码器名的回退路径）验证，真实 GPU 编码的可用性与画质待部署机验收；部署机若无可用的硬件编码器，服务自动保持 libx264 行为。
+v0.9 变更的服务端部分（`/api/update`、APK 下载公开化）已通过 Go 测试并在 macOS 服务端部署验证；**Flutter 端改动已在 macOS 本机构建环境完成全量验证**：`flutter analyze` 双端 0 问题、`flutter test` 全过（儿童 18 / 家长 8）、两端 APK 成功打包并经管理台下载与自动更新链路验证。真机上的长按倍速与拖动快进表现仍待验收。本轮缩略图磁盘缓存（family_api 新增 `path_provider`，两端调用点与 pubspec.lock 需重新 `flutter pub get`）与上述改动同属未在 Flutter 3.44 环境验证的范围。重编码硬件加速在无 ffmpeg 的开发机上仅通过单元测试（桩探测器、编造编码器名的回退路径）验证，真实 GPU 编码的可用性与画质待部署机验收；部署机若无可用的硬件编码器，服务自动保持 libx264 行为。
+
+### macOS 本机构建（Windows 不可用时）
+
+工具链均在用户目录、不污染系统：Flutter 3.29.3（`~/apply/flutter-3.29.3`，git 远端指向 gitee 镜像）、JDK 17 Corretto（`~/apply/jdk-17`）、Android SDK（`~/apply/android-sdk`，platform 35/36 + build-tools 35）。3.44 工具链要求 macOS 14+，本机 macOS 12 只能运行 Dart 3.7，相关适配：
+
+- `environment.sdk` 放宽至 `>=3.7.0`；依赖按兼容矩阵降级（video_player 2.10.1、shared_preferences ^2.5.3、package_info_plus ^9、url_launcher ^6.3.2、file_picker 11、flutter_lints ^5、mobile_scanner ^7.4.2），`video_player_platform_interface` override 6.6.0；
+- `packages/video_player_android` Dart 代码已向后移植到 6.6.0（`video_track_compat.dart` 垫片；back buffer 因门面 2.10.1 不透传 options 而不可达）；
+- Android 组合：AGP 8.9.1 + Gradle 8.11.1（wrapper 走腾讯镜像）+ Kotlin 2.1.0；app 模块显式 `id("kotlin-android")`；minSdk 24、compileSdk 36（mobile_scanner 的 androidx.camera 1.6 要求）；`gradle.properties` 已加 suppressUnsupportedCompileSdk=36；
+- 构建命令（`--ignore-deprecation` 为 Flutter 3.29 工具对 v2 布局的保守误判，安全跳过）：
+
+```bash
+export JAVA_HOME=~/apply/jdk-17/Contents/Home ANDROID_HOME=~/apply/android-sdk
+export PUB_HOSTED_URL=https://pub.flutter-io.cn FLUTTER_STORAGE_BASE_URL=https://storage.flutter-io.cn FLUTTER_GIT_URL=https://gitee.com/mirrors/flutter
+export PATH=~/apply/flutter-3.29.3/bin:$PATH
+cd apps/kids_app && flutter build apk --release --ignore-deprecation
+cd ../parent_app && flutter build apk --release --ignore-deprecation
+```
+
+产物自动落入 `apps/*/build/app/outputs/flutter-apk/app-release.apk`，管理台「安装包」页与两端 App 内自动更新随之生效。Windows 构建机仍可用原 `scripts/build-android.ps1`（Flutter 3.44 无需以上适配；pubspec 的 sdk 下限两端通用）。
 
 待完成：Android 系统分享和后台同步、博主/平台合集批量导入、作品 ID 去重、整库清理、离线封面/断点续传/配额、多儿童档案、可靠观看额度、备份恢复界面、完整电视验收。当前离线上限 2GB，喜欢只在本地，二十分钟提示按当前页面计时，APK 为调试签名。
 

@@ -13,6 +13,7 @@ import 'pages.dart';
 import 'playback_progress.dart';
 import 'playback_disk_cache.dart';
 import 'recommendations.dart';
+import 'time_budget.dart';
 
 void main() {
   WidgetsFlutterBinding.ensureInitialized();
@@ -46,6 +47,8 @@ class KidsHome extends StatefulWidget {
 class _KidsHomeState extends State<KidsHome> {
   late final api = widget.api ?? FamilyApi();
   late final downloads = widget.downloads ?? Downloads(api);
+  // 家长设定的每日时长额度：播放页据此在用完时暂停并提示。
+  late final budget = TimeBudget(api);
   final address = TextEditingController(text: 'http://192.168.1.10:8765');
   List<dynamic> videos = [], collections = [], offline = [];
   Set<String> favorites = {};
@@ -64,10 +67,31 @@ class _KidsHomeState extends State<KidsHome> {
 
   String get favoriteKey =>
       'favorites_${sha256.convert(utf8.encode('${api.server}|${api.token}'))}';
+  bool _wasExhausted = false;
   @override
   void initState() {
     super.initState();
+    budget.addListener(_onBudgetChanged);
     restore();
+  }
+
+  /// 额度用完/恢复时切换安静模式：只重建列表，不弹任何提示。
+  void _onBudgetChanged() {
+    if (!mounted) return;
+    final exhausted = budget.exhausted;
+    if (exhausted == _wasExhausted) return;
+    _wasExhausted = exhausted;
+    setState(() => feedRevision++);
+  }
+
+  /// 安静模式的可见内容池：家长指定的合集；未指定或合集已删除时为空。
+  List<dynamic> get quietPool {
+    final id = budget.afterLimitCollectionId;
+    if (id.isEmpty) return const [];
+    for (final c in collections) {
+      if ('${c['id']}' == id) return List<dynamic>.from(c['videos'] as List);
+    }
+    return const [];
   }
 
   Future<void> restore() async {
@@ -76,6 +100,7 @@ class _KidsHomeState extends State<KidsHome> {
       if (api.server.isNotEmpty) address.text = api.server;
       connected = api.server.isNotEmpty;
       if (connected) {
+        await budget.restoreCached();
         await localState();
         await refresh();
         unawaited(checkForUpdate());
@@ -137,6 +162,8 @@ class _KidsHomeState extends State<KidsHome> {
     final nextVideos = await api.request('GET', '/api/videos') as List;
     final nextCollections =
         await api.request('GET', '/api/collections') as List;
+    // 时长额度独立于内容刷新：失败时沿用本地口径，不影响播放。
+    unawaited(budget.load());
     await localState();
     if (!mounted) return;
     videos = nextVideos;
@@ -201,6 +228,7 @@ class _KidsHomeState extends State<KidsHome> {
               body: FeedView(
                 api: api,
                 progress: progress,
+                budget: budget,
                 items: items,
                 start: index,
                 favorites: favorites,
@@ -241,6 +269,7 @@ class _KidsHomeState extends State<KidsHome> {
 
   @override
   void dispose() {
+    budget.removeListener(_onBudgetChanged);
     address.dispose();
     super.dispose();
   }
@@ -378,12 +407,30 @@ class _KidsHomeState extends State<KidsHome> {
     ),
   );
   Widget feed() {
-    final source = error != null && offline.isNotEmpty
-        ? offline
-        : videos.isNotEmpty
-        ? videos
-        : offline;
-    final items = order.arrange(source);
+    final List<dynamic> items;
+    if (budget.exhausted) {
+      // 安静模式：没有任何提示，当前这条自然播完，之后只能刷到
+      // 家长指定合集里的内容；未指定合集时就像内容都被看完了一样。
+      final pool = quietPool;
+      final current = <dynamic>[];
+      if (lastRecommendation != null) {
+        for (final v in [...videos, ...offline]) {
+          if ('${v['id']}' == lastRecommendation) {
+            current.add(v);
+            break;
+          }
+        }
+      }
+      final seen = {for (final v in current) '${v['id']}'};
+      items = [...current, ...pool.where((v) => seen.add('${v['id']}'))];
+    } else {
+      final source = error != null && offline.isNotEmpty
+          ? offline
+          : videos.isNotEmpty
+          ? videos
+          : offline;
+      items = order.arrange(source);
+    }
     if (items.isEmpty) {
       if (busy) {
         return const Center(
@@ -418,6 +465,7 @@ class _KidsHomeState extends State<KidsHome> {
       api: api,
       items: items,
       progress: progress,
+      budget: budget,
       start: items
           .indexWhere((v) => v['id'] == lastRecommendation)
           .clamp(0, items.length - 1),
@@ -434,6 +482,8 @@ class _KidsHomeState extends State<KidsHome> {
   }
 
   List<dynamic> get availableVideos {
+    // 安静模式：搜索同样只剩指定合集的内容。
+    if (budget.exhausted) return quietPool;
     final byId = <String, dynamic>{for (final v in videos) '${v['id']}': v};
     for (final v in offline) {
       byId['${v['id']}'] = v;
@@ -442,10 +492,16 @@ class _KidsHomeState extends State<KidsHome> {
   }
 
   Widget contentList() {
+    // 安静模式下各页签同步收缩：合集只剩指定的一个，离线与喜欢隐藏。
+    final quiet = budget.exhausted;
     final list = tab == 1
-        ? collections
+        ? (quiet
+              ? collections
+                    .where((c) => '${c['id']}' == budget.afterLimitCollectionId)
+                    .toList()
+              : collections)
         : tab == 2
-        ? offline
+        ? (quiet ? <dynamic>[] : offline)
         : availableVideos.where((v) => favorites.contains(v['id'])).toList();
     final title = ['', '我的合集', '离线缓存', '我喜欢的'][tab];
     final tips = ['', '按主题发现，按喜欢观看', '下载完成后，离开网络也能看', '把喜欢的每一段，留在这里'][tab];
@@ -613,6 +669,15 @@ class _KidsHomeState extends State<KidsHome> {
           leading: const Icon(Icons.offline_pin_outlined),
           title: const Text('管理离线缓存'),
           onTap: () => setState(() => tab = 2),
+        ),
+        ListTile(
+          leading: const Icon(Icons.schedule_rounded),
+          title: Text('今日已看 ${budget.watchedMinutes} 分钟'),
+          subtitle: Text(
+            budget.limited
+                ? '家长设定每天最多 ${budget.limitMinutes} 分钟'
+                : '家长未限制观看时长',
+          ),
         ),
         const PlaybackCachePanel(),
         ListTile(

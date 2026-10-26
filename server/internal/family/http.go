@@ -139,23 +139,47 @@ func (a *App) Handler() http.Handler {
 	a.route(mux, "POST /api/tasks/{id}/retry", "admin", a.retry)
 	a.route(mux, "POST /api/tasks/{id}/cancel", "admin", a.cancelImport)
 	a.route(mux, "POST /api/watch", "child", a.reportWatch)
+	a.route(mux, "GET /api/settings/time-limit", "child", a.timeLimit)
+	a.route(mux, "PUT /api/settings/time-limit", "admin", a.saveTimeLimit)
 	a.route(mux, "GET /api/videos", "child", func(w http.ResponseWriter, r *http.Request, role string) error {
-		items, err := query(a.DB, `SELECT v.*, IFNULL(s.plays,0) AS plays, IFNULL(s.watched_ms,0) AS watched_ms,
-IFNULL(s.completed,0) AS completed_count, s.last_watched_at
-FROM videos v LEFT JOIN watch_stats s ON s.video_id=v.id
-ORDER BY v.created_at DESC, v.rowid DESC`)
-		if err == nil {
-			for _, v := range items {
-				if name, _ := v["path"].(string); name != "" && filepath.Base(name) == name {
-					if info, e := os.Stat(filepath.Join(a.Config.Data, "videos", name)); e == nil && !info.IsDir() {
-						v["size_bytes"] = info.Size()
-					}
-				}
-				a.present(v, role)
+		// 安静模式：当日额度用完后不做提示，儿童角色的目录静默收缩为
+		// 家长指定的合集；未指定合集时全部隐藏。
+		quiet, quietID := false, ""
+		if role == "child" {
+			if active, id, e := a.quietState(); e != nil {
+				return e
+			} else if active {
+				quiet, quietID = true, id
 			}
-			reply(w, 200, items)
 		}
-		return err
+		var items []map[string]any
+		if quiet && quietID == "" {
+			items = []map[string]any{}
+		} else {
+			sqlText := `SELECT v.*, IFNULL(s.plays,0) AS plays, IFNULL(s.watched_ms,0) AS watched_ms,
+IFNULL(s.completed,0) AS completed_count, s.last_watched_at
+FROM videos v LEFT JOIN watch_stats s ON s.video_id=v.id`
+			args := []any{}
+			if quiet {
+				sqlText += " WHERE v.id IN (SELECT video_id FROM collection_items WHERE collection_id=?)"
+				args = append(args, quietID)
+			}
+			sqlText += " ORDER BY v.created_at DESC, v.rowid DESC"
+			var err error
+			if items, err = query(a.DB, sqlText, args...); err != nil {
+				return err
+			}
+		}
+		for _, v := range items {
+			if name, _ := v["path"].(string); name != "" && filepath.Base(name) == name {
+				if info, e := os.Stat(filepath.Join(a.Config.Data, "videos", name)); e == nil && !info.IsDir() {
+					v["size_bytes"] = info.Size()
+				}
+			}
+			a.present(v, role)
+		}
+		reply(w, 200, items)
+		return nil
 	})
 	a.route(mux, "PATCH /api/videos/{id}", "admin", a.editVideo)
 	a.route(mux, "DELETE /api/videos/{id}", "admin", a.deleteVideo)
@@ -384,7 +408,22 @@ func (a *App) editVideo(w http.ResponseWriter, r *http.Request, _ string) error 
 	return nil
 }
 func (a *App) collections(w http.ResponseWriter, r *http.Request, role string) error {
-	items, err := query(a.DB, "SELECT * FROM collections ORDER BY rowid DESC")
+	// 安静模式下儿童角色只看到家长指定的合集，其余合集（含空合集）消失。
+	collectionsSQL := "SELECT * FROM collections ORDER BY rowid DESC"
+	args := []any{}
+	if role == "child" {
+		if active, quietID, e := a.quietState(); e != nil {
+			return e
+		} else if active {
+			if quietID == "" {
+				reply(w, 200, []map[string]any{})
+				return nil
+			}
+			collectionsSQL = "SELECT * FROM collections WHERE id=?"
+			args = append(args, quietID)
+		}
+	}
+	items, err := query(a.DB, collectionsSQL, args...)
 	if err != nil {
 		return err
 	}

@@ -56,7 +56,7 @@ func migrate(db *sql.DB, c Config, version int) error {
 			return err
 		}
 	}
-	if _, err = tx.Exec("PRAGMA user_version=4"); err != nil {
+	if _, err = tx.Exec("PRAGMA user_version=5"); err != nil {
 		return err
 	}
 	return tx.Commit()

@@ -138,9 +138,9 @@ func (a *App) systemInfo(w http.ResponseWriter, r *http.Request, _ string) error
 	python := a.downloaderPythonPath()
 	_, pythonMissing := os.Stat(python)
 	info["tools"] = map[string]any{
-		"ffmpeg":           toolAvailable("ffmpeg"),
-		"ffprobe":          toolAvailable("ffprobe"),
-		"downloader":       pythonMissing == nil,
+		"ffmpeg":            toolAvailable("ffmpeg"),
+		"ffprobe":           toolAvailable("ffprobe"),
+		"downloader":        pythonMissing == nil,
 		"douyin_configured": douyinConfigured,
 	}
 	reply(w, 200, info)

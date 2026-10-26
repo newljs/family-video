@@ -15,7 +15,10 @@ func TestTranscodeCapsOversizedSources(t *testing.T) {
 		t.Skip("ffmpeg required")
 	}
 	a := testApp(t)
-	for _, c := range []struct{ size string; width, height int }{
+	for _, c := range []struct {
+		size          string
+		width, height int
+	}{
 		{"2048x1152", 1920, 1080},
 		{"320x240", 320, 240},
 	} {

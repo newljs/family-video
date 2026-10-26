@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'feed_player_cache.dart';
 import 'playback_progress.dart';
+import 'time_budget.dart';
 import 'watch_stats.dart';
 import 'package:family_api/family_api.dart';
 import 'package:flutter/material.dart';
@@ -232,6 +233,9 @@ class FeedView extends StatefulWidget {
   final int start;
   final bool active;
   final PlaybackProgress? progress;
+
+  /// 家长设定的每日时长额度；为空时不启用时长控制（旧入口与测试兼容）。
+  final TimeBudget? budget;
   final ValueChanged<String>? onVideoChanged;
   final Set<String> favorites, downloaded;
   final ValueChanged<String> onLike;
@@ -247,6 +251,7 @@ class FeedView extends StatefulWidget {
     this.start = 0,
     this.active = true,
     this.progress,
+    this.budget,
     this.onVideoChanged,
     required this.favorites,
     required this.downloaded,
@@ -276,10 +281,17 @@ class _FeedViewState extends State<FeedView> with WidgetsBindingObserver {
   bool restoringPosition = false;
   bool appActive = true;
   // 观看统计：按采样累计观看时长、播放次数与完播，批量上报服务器。
-  late final WatchReporter reporter = WatchReporter(widget.api);
+  // 服务端响应同时校正每日时长额度（家长端设定）。
+  late final WatchReporter reporter = WatchReporter(
+    widget.api,
+    onSync: (data) => widget.budget?.apply(data),
+  );
   final Map<String, Duration> lastSample = {};
   final Set<String> completedSeen = {};
   bool playCounted = false;
+  // 休息提示生效：连续观看 20 分钟到点，且今日额度没有先耗尽。
+  // 额度用完后进入安静模式（由列表收缩接管），不再弹任何提示。
+  bool get blocked => sessionEnded && (widget.budget?.exhausted != true);
   // 播放手势瞬态：长按 2 倍速、水平拖动快进的预览位置（毫秒）。
   bool speeding = false;
   double? seekPreview;
@@ -302,7 +314,10 @@ class _FeedViewState extends State<FeedView> with WidgetsBindingObserver {
       final position = p.value.position;
       final last = lastSample[playingId!];
       if (last != null && position > last) {
-        reporter.record(playingId!, watched: position - last);
+        final delta = position - last;
+        reporter.record(playingId!, watched: delta);
+        // 时长额度与统计同口径：只计正向播放增量，暂停与回拖不计。
+        widget.budget?.spend(delta.inMilliseconds);
       }
       lastSample[playingId!] = position;
       if (!playCounted && p.value.isPlaying) {
@@ -327,10 +342,12 @@ class _FeedViewState extends State<FeedView> with WidgetsBindingObserver {
   void initState() {
     super.initState();
     WidgetsBinding.instance.addObserver(this);
+    widget.budget?.addListener(onBudgetChanged);
     index = widget.start;
     pages = PageController(initialPage: index);
     load(index);
     progressTimer = Timer.periodic(const Duration(seconds: 2), (_) {
+      widget.budget?.tick(); // 跨天时额度重新开始
       remember();
       unawaited(progress.flush());
     });
@@ -338,6 +355,13 @@ class _FeedViewState extends State<FeedView> with WidgetsBindingObserver {
       player?.pause();
       if (mounted) setState(() => sessionEnded = true);
     });
+  }
+
+  /// 额度变化只刷新角标；安静模式的列表收缩由页面层（KidsHome）处理，
+  /// 播放绝不中断，让孩子感觉不到额度机制的存在。
+  void onBudgetChanged() {
+    if (!mounted) return;
+    setState(() {});
   }
 
   @override
@@ -356,13 +380,13 @@ class _FeedViewState extends State<FeedView> with WidgetsBindingObserver {
       if (!widget.active) {
         resumeWhenActive = player?.value.isInitialized == true
             ? player!.value.isPlaying
-            : !sessionEnded;
+            : !blocked;
         remember();
         unawaited(progress.flush());
         player?.pause();
       } else if (resumeWhenActive &&
           appActive &&
-          !sessionEnded &&
+          !blocked &&
           player?.value.isInitialized == true) {
         player?.play();
       }
@@ -417,7 +441,7 @@ class _FeedViewState extends State<FeedView> with WidgetsBindingObserver {
       player = current;
       restoringPosition = false;
       current.addListener(observePlayer);
-      if (!sessionEnded && widget.active && appActive) await current.play();
+      if (!blocked && widget.active && appActive) await current.play();
       if (!mounted || epoch != generation) {
         if (!identical(activeEntry, entry) && !entry.closed) {
           await current.pause();
@@ -434,7 +458,7 @@ class _FeedViewState extends State<FeedView> with WidgetsBindingObserver {
 
   void move(int delta) {
     final next = index + delta;
-    if (!sessionEnded && next >= 0 && next < widget.items.length) {
+    if (!blocked && next >= 0 && next < widget.items.length) {
       pages.animateToPage(
         next,
         duration: const Duration(milliseconds: 220),
@@ -445,14 +469,14 @@ class _FeedViewState extends State<FeedView> with WidgetsBindingObserver {
 
   void toggle() {
     final p = player;
-    if (!sessionEnded && p != null && p.value.isInitialized) {
+    if (!blocked && p != null && p.value.isInitialized) {
       p.value.isPlaying ? p.pause() : p.play();
     }
   }
 
   void seek(int delta) {
     final p = player;
-    if (p != null && p.value.isInitialized && !sessionEnded) {
+    if (p != null && p.value.isInitialized && !blocked) {
       p.seekTo(
         Duration(
           seconds: (p.value.position.inSeconds + delta).clamp(
@@ -477,7 +501,7 @@ class _FeedViewState extends State<FeedView> with WidgetsBindingObserver {
 
   void startSpeedBoost() {
     final p = player;
-    if (!sessionEnded && !speeding && p != null && p.value.isInitialized) {
+    if (!blocked && !speeding && p != null && p.value.isInitialized) {
       setPlayerSpeed(p, 2.0);
       setState(() => speeding = true);
     }
@@ -491,7 +515,7 @@ class _FeedViewState extends State<FeedView> with WidgetsBindingObserver {
 
   void startSeekPreview(DragStartDetails details) {
     final p = player;
-    if (sessionEnded || speeding || p == null || !p.value.isInitialized) return;
+    if (blocked || speeding || p == null || !p.value.isInitialized) return;
     seekTarget = p.value.position.inMilliseconds.toDouble();
     seekTotal = p.value.duration;
     setState(() => seekPreview = seekTarget);
@@ -521,7 +545,7 @@ class _FeedViewState extends State<FeedView> with WidgetsBindingObserver {
     final active = seekPreview != null;
     final p = player;
     setState(() => seekPreview = null);
-    if (!active || p == null || !p.value.isInitialized || sessionEnded) {
+    if (!active || p == null || !p.value.isInitialized || blocked) {
       return;
     }
     p.seekTo(Duration(milliseconds: target.round()));
@@ -602,6 +626,7 @@ class _FeedViewState extends State<FeedView> with WidgetsBindingObserver {
   void dispose() {
     generation++;
     WidgetsBinding.instance.removeObserver(this);
+    widget.budget?.removeListener(onBudgetChanged);
     remember();
     unawaited(progress.flush());
     reporter.dispose();
@@ -626,7 +651,7 @@ class _FeedViewState extends State<FeedView> with WidgetsBindingObserver {
     },
     child: Focus(
       autofocus: true,
-      child: sessionEnded
+      child: blocked
           ? const Center(
               child: Text(
                 '看了二十分钟啦\n休息一下吧',
@@ -634,7 +659,10 @@ class _FeedViewState extends State<FeedView> with WidgetsBindingObserver {
                 style: TextStyle(color: Colors.white, fontSize: 26),
               ),
             )
-          : NotificationListener<ScrollNotification>(
+          : Stack(
+              fit: StackFit.expand,
+              children: [
+                NotificationListener<ScrollNotification>(
             onNotification: onEdgeScroll,
             child: PageView.builder(
               controller: pages,
@@ -764,7 +792,29 @@ class _FeedViewState extends State<FeedView> with WidgetsBindingObserver {
                 );
               },
             ),
-          ),
+                ),
+                if (widget.budget?.limited == true &&
+                    widget.budget?.exhausted != true)
+                  Positioned(
+                    top: 0,
+                    left: 0,
+                    right: 0,
+                    child: SafeArea(
+                      bottom: false,
+                      child: Align(
+                        alignment: Alignment.topCenter,
+                        child: Padding(
+                          padding: const EdgeInsets.only(top: 62),
+                          child: RemainingBadge(
+                            minutes: widget.budget!.remainingMinutes,
+                            urgent: widget.budget!.remainingMs <= 5 * 60000,
+                          ),
+                        ),
+                      ),
+                    ),
+                  ),
+              ],
+            ),
     ),
   );
 }
@@ -772,6 +822,36 @@ class _FeedViewState extends State<FeedView> with WidgetsBindingObserver {
 String _mmss(Duration d) {
   final m = d.inMinutes, s = d.inSeconds % 60;
   return '$m:${s.toString().padLeft(2, '0')}';
+}
+
+/// 顶部居中的剩余时长提示：临期 5 分钟内变为醒目的红底样式。
+class RemainingBadge extends StatelessWidget {
+  final int minutes;
+  final bool urgent;
+  const RemainingBadge({super.key, required this.minutes, required this.urgent});
+  @override
+  Widget build(BuildContext context) => Container(
+    padding: const EdgeInsets.symmetric(horizontal: 13, vertical: 7),
+    decoration: BoxDecoration(
+      color: urgent ? accent : Colors.black54,
+      borderRadius: BorderRadius.circular(30),
+    ),
+    child: Row(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        Icon(Icons.schedule_rounded, color: Colors.white, size: 15),
+        const SizedBox(width: 5),
+        Text(
+          minutes >= 1 ? '还能看 $minutes 分钟' : '快到时间啦',
+          style: const TextStyle(
+            color: Colors.white,
+            fontSize: 13,
+            fontWeight: FontWeight.w600,
+          ),
+        ),
+      ],
+    ),
+  );
 }
 
 /// 长按屏幕时居中显示的 2 倍速提示。

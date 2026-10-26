@@ -33,7 +33,7 @@ func TestMigrationMakesLegacyVideosVisibleAndBacksUp(t *testing.T) {
 	var version, published int
 	a.DB.QueryRow("PRAGMA user_version").Scan(&version)
 	a.DB.QueryRow("SELECT published FROM videos WHERE id='old'").Scan(&published)
-	if version != 4 || published != 1 {
+	if version != 5 || published != 1 {
 		t.Fatal(version, published)
 	}
 	backups, _ := filepath.Glob(filepath.Join(c.Data, "database", "before-v3-*.sqlite3"))

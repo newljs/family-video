@@ -11,8 +11,9 @@ HTTP 和 worker 共用进程，OS 文件锁阻止第二个 worker。先监听端
 
 - `server/cmd/family-video/main.go`：启动、监听和退出。
 - `server/internal/family/config.go`：环境配置、内部签名兼容。
-- `store.go / schema.sql / migrations.go`：schema v3、v1/v2 快照及事务迁移。
+- `store.go / schema.sql / migrations.go`：schema v3–v5、v1/v2 快照及事务迁移。
 - `http.go / manage.go`：目录、导入、上传、任务、合集和 Range。
+- `watch.go / timelimit.go`：观看统计上报、每日时长限额与按天用量。
 - `worker.go`：任务领取、重试调度、FFmpeg、原子入库、取消和恢复。
 - `resolver.go / server/downloader/resolve.py`：隔离 F2 SDK、结构化结果、固定错误映射。
 - `downloader.go / transfer.go`：候选地址、地址刷新、Go 流式传输和字节进度。
@@ -40,6 +41,10 @@ queued→running→completed/failed；queued/running/failed 可取消。瞬态�
 ## API v0.7
 
 GET /health、GET /api/me、POST /api/imports、POST /api/uploads、GET /api/tasks、POST /api/tasks/{id}/retry、POST /api/tasks/{id}/cancel、GET /api/videos、PATCH /api/videos/{id}、DELETE /api/videos/{id}、GET /api/collections、POST /api/collections、PUT /api/collections/{id}、DELETE /api/collections/{id}、GET /media/{id}/{resource}。
+
+后续版本增加：POST /api/watch（儿童观看统计批量上报，响应携带每日额度）、GET /api/settings/time-limit（儿童与家长读取限额、今日已看与安静模式合集）、PUT /api/settings/time-limit（仅家长，0–720 分钟，0 为不限制，可指定额度用完后的可见合集）等。
+
+时长额度用完后服务端进入安静模式：对儿童角色的目录与合集查询按指定合集过滤（未指定则返回空），不做任何提示；家长角色不受影响。儿童端本地预算同步收缩推荐流与各页签，当前播放经已签发地址自然播完。
 
 视频 PATCH 修改标题和可选描述，空描述可清除旧值。合集提交完整有序 video_ids，事务验证所有视频；删除合集保留视频。任务返回 phase、字节、错误代码、自动重试次数及下次时间。
 

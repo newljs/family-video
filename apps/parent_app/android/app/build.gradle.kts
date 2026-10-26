@@ -1,12 +1,13 @@
 plugins {
     id("com.android.application")
+    id("kotlin-android")
     // The Flutter Gradle Plugin must be applied after the Android and Kotlin Gradle plugins.
     id("dev.flutter.flutter-gradle-plugin")
 }
 
 android {
     namespace = "cn.familyvideo.parent_app"
-    compileSdk = flutter.compileSdkVersion
+    compileSdk = 36 // mobile_scanner 的 camera 1.6 要求 API 36
     ndkVersion = flutter.ndkVersion
 
     compileOptions {
@@ -19,7 +20,7 @@ android {
         applicationId = "cn.familyvideo.parent_app"
         // You can update the following values to match your application needs.
         // For more information, see: https://flutter.dev/to/review-gradle-config.
-        minSdk = flutter.minSdkVersion
+        minSdk = 24 // mobile_scanner 23 + video_player fork 24
         targetSdk = flutter.targetSdkVersion
         versionCode = flutter.versionCode
         versionName = flutter.versionName

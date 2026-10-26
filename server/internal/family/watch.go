@@ -5,6 +5,7 @@ package family
 
 import (
 	"net/http"
+	"time"
 )
 
 type watchReport struct {
@@ -34,6 +35,7 @@ ON CONFLICT(video_id) DO UPDATE SET
  watched_ms=watched_ms+excluded.watched_ms,
  completed=completed+excluded.completed,
  last_watched_at=CURRENT_TIMESTAMP`
+	watchedToday := int64(0)
 	for _, report := range body.Reports {
 		if !safeVideoID.MatchString(report.VideoID) ||
 			report.WatchedMS < 0 || report.WatchedMS > 24*3600*1000 {
@@ -56,10 +58,30 @@ ON CONFLICT(video_id) DO UPDATE SET
 		if _, err := tx.Exec(upsert, report.VideoID, plays, report.WatchedMS, completed); err != nil {
 			return err
 		}
+		watchedToday += report.WatchedMS
 	}
-	if err := tx.Commit(); err != nil {
+	// 时长额度以服务端按天累计为准；顺带清理一个月前的旧日期。
+	day := today()
+	if watchedToday > 0 {
+		if _, err = tx.Exec(`INSERT INTO watch_days(day,watched_ms) VALUES(?,?)
+ON CONFLICT(day) DO UPDATE SET watched_ms=watched_ms+excluded.watched_ms, updated_at=CURRENT_TIMESTAMP`, day, watchedToday); err != nil {
+			return err
+		}
+	}
+	if _, err = tx.Exec("DELETE FROM watch_days WHERE day < ?", time.Now().AddDate(0, 0, -31).Format("2006-01-02")); err != nil {
 		return err
 	}
-	reply(w, 200, map[string]bool{"ok": true})
+	if err = tx.Commit(); err != nil {
+		return err
+	}
+	limit, err := a.timeLimitMinutes()
+	if err != nil {
+		return err
+	}
+	afterLimit, err := a.afterLimitCollection()
+	if err != nil {
+		return err
+	}
+	reply(w, 200, watchBudget(a.DB, limit, afterLimit))
 	return nil
 }

@@ -37,9 +37,18 @@ class _ParentHomeState extends State<ParentHome> {
   final link = TextEditingController(), title = TextEditingController();
   List<dynamic> videos = [], tasks = [], collections = [];
   List<Map<String, dynamic>> inbox = [];
+  Map<String, dynamic>? timeLimit;
+  int limitDraft = 30;
   bool connected = false, busy = false;
   String? error;
   int tab = 0;
+
+  int get watchedMinutes =>
+      ((timeLimit?['watched_ms_today'] as num?)?.toInt() ?? 0) ~/ 60000;
+  int get limitMinutes => (timeLimit?['limit_minutes'] as num?)?.toInt() ?? 0;
+  String get afterLimitId =>
+      '${timeLimit?['after_limit_collection_id'] ?? ''}';
+  bool get limitReached => timeLimit?['exhausted'] == true;
 
   @override
   void initState() {
@@ -127,6 +136,16 @@ class _ParentHomeState extends State<ParentHome> {
     final nextTasks = await api.request('GET', '/api/tasks') as List;
     final nextCollections =
         await api.request('GET', '/api/collections') as List;
+    // 时长限额独立加载：旧服务端没有该接口时隐藏设置卡片，不影响其余功能。
+    try {
+      timeLimit =
+          await api.request('GET', '/api/settings/time-limit')
+              as Map<String, dynamic>?;
+      final draft = limitMinutes;
+      if (draft > 0) limitDraft = draft;
+    } catch (_) {
+      timeLimit = null;
+    }
     if (!mounted) return;
     videos = nextVideos;
     tasks = nextTasks;
@@ -173,6 +192,16 @@ class _ParentHomeState extends State<ParentHome> {
     }
     await refresh();
   }
+
+  /// 保存每日观看时长限制与额度用完后的可见合集；失败时 perform 显示错误提示。
+  Future<void> saveTimeLimit(int minutes, String collectionId) =>
+      perform(() async {
+        timeLimit = await api.request('PUT', '/api/settings/time-limit', {
+          'limit_minutes': minutes,
+          'after_limit_collection_id': collectionId,
+        }) as Map<String, dynamic>?;
+        if (minutes > 0) limitDraft = minutes;
+      });
 
   @override
   void dispose() {
@@ -447,6 +476,94 @@ class _ParentHomeState extends State<ParentHome> {
             ],
           ),
         ),
+        const SizedBox(height: 22),
+        if (timeLimit != null)
+          PanelCard(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                SectionHeading(
+                  '儿童观看时长',
+                  subtitle: '设定孩子每天可观看的总时长，用完后儿童端当天停止播放。',
+                ),
+                SwitchListTile(
+                  contentPadding: EdgeInsets.zero,
+                  secondary: const Icon(
+                    Icons.schedule_rounded,
+                    color: parentGreen,
+                  ),
+                  title: const Text('每日时长限制'),
+                  subtitle: Text(
+                    limitMinutes > 0 ? '每天最多 $limitMinutes 分钟' : '不限制',
+                  ),
+                  value: limitMinutes > 0,
+                  onChanged: busy
+                      ? null
+                      : (v) => saveTimeLimit(v ? limitDraft : 0, afterLimitId),
+                ),
+                if (limitMinutes > 0)
+                  Slider(
+                    value: limitDraft.clamp(5, 240).toDouble(),
+                    min: 5,
+                    max: 240,
+                    divisions: 47,
+                    label: '${limitDraft.clamp(5, 240)} 分钟',
+                    onChanged: busy
+                        ? null
+                        : (v) => setState(() => limitDraft = v.round()),
+                    onChangeEnd: busy
+                        ? null
+                        : (v) => saveTimeLimit(v.round(), afterLimitId),
+                  ),
+                if (limitMinutes > 0)
+                  DropdownButtonFormField<String>(
+                    value: collections.any(
+                        (c) => '${c['id']}' == afterLimitId,
+                      )
+                      ? afterLimitId
+                      : '',
+                    decoration: const InputDecoration(
+                      labelText: '额度用完后可看',
+                      prefixIcon: Icon(Icons.nights_stay_rounded),
+                    ),
+                    items: [
+                      const DropdownMenuItem(
+                        value: '',
+                        child: Text('不指定（用完后什么也看不到）'),
+                      ),
+                      ...collections.map(
+                        (c) => DropdownMenuItem(
+                          value: '${c['id']}',
+                          child: Text('${c['title']}'),
+                        ),
+                      ),
+                    ],
+                    onChanged: busy
+                        ? null
+                        : (v) => saveTimeLimit(limitMinutes, v ?? ''),
+                  ),
+                if (limitMinutes > 0 && afterLimitId.isEmpty)
+                  const Padding(
+                    padding: EdgeInsets.only(top: 6),
+                    child: Text(
+                      '不指定合集时，额度用完后儿童端将看不到任何视频。',
+                      style: TextStyle(color: Color(0xff718081), fontSize: 12),
+                    ),
+                  ),
+                Text(
+                  limitMinutes > 0
+                      ? (limitReached
+                            ? '今日额度已用完，儿童端只剩所选合集的内容'
+                            : '今日已看 $watchedMinutes 分钟，还剩 ${(limitMinutes - watchedMinutes).clamp(0, limitMinutes)} 分钟')
+                      : '今日已看 $watchedMinutes 分钟',
+                  style: const TextStyle(
+                    color: Color(0xff718081),
+                    fontSize: 12,
+                  ),
+                ),
+              ],
+            ),
+          ),
         const SizedBox(height: 22),
         const PanelCard(
           child: Column(

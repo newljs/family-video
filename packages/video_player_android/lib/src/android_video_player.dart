@@ -3,6 +3,7 @@
 // found in the LICENSE file.
 
 import 'dart:async';
+import 'video_track_compat.dart';
 
 import 'package:flutter/widgets.dart';
 import 'package:video_player_platform_interface/video_player_platform_interface.dart';
@@ -103,7 +104,8 @@ class AndroidVideoPlayer extends VideoPlayerPlatform {
       httpHeaders: httpHeaders,
       userAgent: userAgent,
       formatHint: formatHint,
-      backBufferDurationMs: options.videoPlayerOptions?.backBufferDurationMs,
+      // 门面 2.10.1 与 6.6.0 均不透传 videoPlayerOptions，back buffer 不可达。
+      backBufferDurationMs: null,
     );
 
     final int playerId;
@@ -251,6 +253,7 @@ class AndroidVideoPlayer extends VideoPlayerPlatform {
   }
 
   @override
+  // platform_interface 6.6.0 无此方法声明，6.7+ 的选轨能力由门面 2.10.1 不触达，保留内部实现。
   Future<List<VideoTrack>> getVideoTracks(int playerId) async {
     final NativeVideoTrackData nativeData = await _playerWith(id: playerId).getVideoTracks();
     final tracks = <VideoTrack>[];
@@ -282,7 +285,6 @@ class AndroidVideoPlayer extends VideoPlayerPlatform {
     return tracks;
   }
 
-  @override
   Future<void> selectVideoTrack(int playerId, VideoTrack? track) {
     return _playerWith(id: playerId).selectVideoTrack(track);
   }
