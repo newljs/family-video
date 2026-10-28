@@ -44,7 +44,7 @@ class KidsHome extends StatefulWidget {
   State<KidsHome> createState() => _KidsHomeState();
 }
 
-class _KidsHomeState extends State<KidsHome> {
+class _KidsHomeState extends State<KidsHome> with WidgetsBindingObserver {
   late final api = widget.api ?? FamilyApi();
   late final downloads = widget.downloads ?? Downloads(api);
   // 家长设定的每日时长额度：播放页据此在用完时暂停并提示。
@@ -55,6 +55,10 @@ class _KidsHomeState extends State<KidsHome> {
   bool busy = false, connected = false, previewOpen = false;
   int tab = 0, feedRevision = 0;
   String? error;
+  Timer? _retryTimer;
+  int _retryAttempt = 0;
+  DateTime? _lastRefresh;
+  bool _updateChecked = false;
   RecommendationOrder order = RecommendationOrder();
   PlaybackProgress? savedProgress;
   String? lastRecommendation;
@@ -71,8 +75,47 @@ class _KidsHomeState extends State<KidsHome> {
   @override
   void initState() {
     super.initState();
+    WidgetsBinding.instance.addObserver(this);
     budget.addListener(_onBudgetChanged);
     restore();
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state != AppLifecycleState.resumed ||
+        !connected ||
+        busy ||
+        previewOpen ||
+        api.server.isEmpty) {
+      return;
+    }
+    final last = _lastRefresh;
+    if (last != null &&
+        DateTime.now().difference(last) < const Duration(seconds: 30)) {
+      return;
+    }
+    unawaited(refresh().catchError((Object _) {}));
+  }
+
+  /// 冷启动或链路抖动失败后自动退避重试，避免孩子停留在错误页。
+  /// 成功后清零；播放页不主动刷新，防止正在看的内容被重置。
+  void _scheduleRetry() {
+    if (!mounted || !connected || api.server.isEmpty) return;
+    _retryTimer?.cancel();
+    const delays = [5, 10, 20, 40, 60];
+    final seconds = delays[_retryAttempt.clamp(0, delays.length - 1)];
+    _retryAttempt++;
+    _retryTimer = Timer(Duration(seconds: seconds), () async {
+      if (!mounted || !connected || busy || previewOpen) {
+        _scheduleRetry();
+        return;
+      }
+      try {
+        await refresh();
+      } catch (_) {
+        // refresh 已安排下一次重试。
+      }
+    });
   }
 
   /// 额度用完/恢复时切换安静模式：只重建列表，不弹任何提示。
@@ -103,7 +146,6 @@ class _KidsHomeState extends State<KidsHome> {
         await budget.restoreCached();
         await localState();
         await refresh();
-        unawaited(checkForUpdate());
       }
     });
   }
@@ -158,17 +200,32 @@ class _KidsHomeState extends State<KidsHome> {
   }
 
   Future<void> refresh() async {
-    await api.checkServer();
-    final nextVideos = await api.request('GET', '/api/videos') as List;
-    final nextCollections =
-        await api.request('GET', '/api/collections') as List;
-    // 时长额度独立于内容刷新：失败时沿用本地口径，不影响播放。
-    unawaited(budget.load());
-    await localState();
-    if (!mounted) return;
-    videos = nextVideos;
-    collections = nextCollections;
-    feedRevision++;
+    try {
+      await api.checkServer();
+      final nextVideos = await api.request('GET', '/api/videos') as List;
+      final nextCollections =
+          await api.request('GET', '/api/collections') as List;
+      // 时长额度独立于内容刷新：失败时沿用本地口径，不影响播放。
+      unawaited(budget.load());
+      await localState();
+      if (!mounted) return;
+      setState(() {
+        videos = nextVideos;
+        collections = nextCollections;
+        error = null;
+        feedRevision++;
+      });
+      _lastRefresh = DateTime.now();
+      _retryAttempt = 0;
+      _retryTimer?.cancel();
+      if (!_updateChecked) {
+        _updateChecked = true;
+        unawaited(checkForUpdate());
+      }
+    } catch (_) {
+      _scheduleRetry();
+      rethrow;
+    }
   }
 
   Future<void> perform(Future<void> Function() action) async {
@@ -261,6 +318,7 @@ class _KidsHomeState extends State<KidsHome> {
     if (oldServer != api.server) {
       order = RecommendationOrder();
       lastRecommendation = null;
+      _updateChecked = false;
     }
     connected = true;
     await localState();
@@ -269,8 +327,11 @@ class _KidsHomeState extends State<KidsHome> {
 
   @override
   void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
+    _retryTimer?.cancel();
     budget.removeListener(_onBudgetChanged);
     address.dispose();
+    api.dispose();
     super.dispose();
   }
 
@@ -687,6 +748,10 @@ class _KidsHomeState extends State<KidsHome> {
               ? null
               : () => perform(() async {
                   await api.logout();
+                  _retryTimer?.cancel();
+                  _retryAttempt = 0;
+                  _lastRefresh = null;
+                  _updateChecked = false;
                   connected = false;
                   videos = [];
                   collections = [];

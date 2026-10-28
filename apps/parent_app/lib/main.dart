@@ -30,9 +30,12 @@ class ParentHome extends StatefulWidget {
   State<ParentHome> createState() => _ParentHomeState();
 }
 
-class _ParentHomeState extends State<ParentHome> {
+class _ParentHomeState extends State<ParentHome> with WidgetsBindingObserver {
   late final api = widget.api ?? FamilyApi(clientRole: 'parent');
-  Timer? taskPolling;
+  Timer? taskPolling, _retryTimer;
+  int _retryAttempt = 0;
+  DateTime? _lastRefresh;
+  bool _updateChecked = false;
   final address = TextEditingController(text: 'http://192.168.1.10:8765');
   final link = TextEditingController(), title = TextEditingController();
   List<dynamic> videos = [], tasks = [], collections = [];
@@ -53,7 +56,43 @@ class _ParentHomeState extends State<ParentHome> {
   @override
   void initState() {
     super.initState();
+    WidgetsBinding.instance.addObserver(this);
     initialize();
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state != AppLifecycleState.resumed ||
+        !connected ||
+        busy ||
+        api.server.isEmpty) {
+      return;
+    }
+    final last = _lastRefresh;
+    if (last != null &&
+        DateTime.now().difference(last) < const Duration(seconds: 30)) {
+      return;
+    }
+    unawaited(refresh().catchError((Object _) {}));
+  }
+
+  void _scheduleRetry() {
+    if (!mounted || !connected || api.server.isEmpty) return;
+    _retryTimer?.cancel();
+    const delays = [5, 10, 20, 40, 60];
+    final seconds = delays[_retryAttempt.clamp(0, delays.length - 1)];
+    _retryAttempt++;
+    _retryTimer = Timer(Duration(seconds: seconds), () async {
+      if (!mounted || !connected || busy) {
+        _scheduleRetry();
+        return;
+      }
+      try {
+        await refresh();
+      } catch (_) {
+        // refresh 已安排下一次重试。
+      }
+    });
   }
 
   Future<void> initialize() async {
@@ -63,10 +102,9 @@ class _ParentHomeState extends State<ParentHome> {
       inbox = (jsonDecode(prefs.getString('inbox') ?? '[]') as List)
           .cast<Map<String, dynamic>>();
       if (api.server.isNotEmpty) address.text = api.server;
-      if (api.server.isNotEmpty) {
+      connected = api.server.isNotEmpty;
+      if (connected) {
         await refresh();
-        connected = true;
-        unawaited(checkForUpdate());
       }
     });
   }
@@ -131,39 +169,56 @@ class _ParentHomeState extends State<ParentHome> {
   }
 
   Future<void> refresh() async {
-    await api.checkServer();
-    final nextVideos = await api.request('GET', '/api/videos') as List;
-    final nextTasks = await api.request('GET', '/api/tasks') as List;
-    final nextCollections =
-        await api.request('GET', '/api/collections') as List;
-    // 时长限额独立加载：旧服务端没有该接口时隐藏设置卡片，不影响其余功能。
     try {
-      timeLimit =
-          await api.request('GET', '/api/settings/time-limit')
-              as Map<String, dynamic>?;
-      final draft = limitMinutes;
-      if (draft > 0) limitDraft = draft;
-    } catch (_) {
-      timeLimit = null;
-    }
-    if (!mounted) return;
-    videos = nextVideos;
-    tasks = nextTasks;
-    collections = nextCollections;
-    final active = tasks.any((t) => ['queued', 'running'].contains(t['state']));
-    if (active) {
-      taskPolling ??= Timer.periodic(const Duration(seconds: 8), (_) {
-        if (mounted &&
-            connected &&
-            !busy &&
-            WidgetsBinding.instance.lifecycleState ==
-                AppLifecycleState.resumed) {
-          perform(refresh);
-        }
+      await api.checkServer();
+      final nextVideos = await api.request('GET', '/api/videos') as List;
+      final nextTasks = await api.request('GET', '/api/tasks') as List;
+      final nextCollections =
+          await api.request('GET', '/api/collections') as List;
+      // 时长限额独立加载：旧服务端没有该接口时隐藏设置卡片，不影响其余功能。
+      try {
+        timeLimit =
+            await api.request('GET', '/api/settings/time-limit')
+                as Map<String, dynamic>?;
+        final draft = limitMinutes;
+        if (draft > 0) limitDraft = draft;
+      } catch (_) {
+        timeLimit = null;
+      }
+      if (!mounted) return;
+      setState(() {
+        videos = nextVideos;
+        tasks = nextTasks;
+        collections = nextCollections;
+        error = null;
       });
-    } else {
-      taskPolling?.cancel();
-      taskPolling = null;
+      _lastRefresh = DateTime.now();
+      _retryAttempt = 0;
+      _retryTimer?.cancel();
+      if (!_updateChecked) {
+        _updateChecked = true;
+        unawaited(checkForUpdate());
+      }
+      final active = tasks.any(
+        (t) => ['queued', 'running'].contains(t['state']),
+      );
+      if (active) {
+        taskPolling ??= Timer.periodic(const Duration(seconds: 8), (_) {
+          if (mounted &&
+              connected &&
+              !busy &&
+              WidgetsBinding.instance.lifecycleState ==
+                  AppLifecycleState.resumed) {
+            perform(refresh);
+          }
+        });
+      } else {
+        taskPolling?.cancel();
+        taskPolling = null;
+      }
+    } catch (_) {
+      _scheduleRetry();
+      rethrow;
     }
   }
 
@@ -205,10 +260,13 @@ class _ParentHomeState extends State<ParentHome> {
 
   @override
   void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
     taskPolling?.cancel();
+    _retryTimer?.cancel();
     for (final c in [address, link, title]) {
       c.dispose();
     }
+    api.dispose();
     super.dispose();
   }
 
@@ -439,6 +497,7 @@ class _ParentHomeState extends State<ParentHome> {
                             address.text = addr;
                             await perform(() async {
                               await api.save(address.text);
+                              _updateChecked = false;
                               await refresh();
                               connected = true;
                             });
@@ -452,6 +511,7 @@ class _ParentHomeState extends State<ParentHome> {
                     ? null
                     : () => perform(() async {
                         await api.save(address.text);
+                        _updateChecked = false;
                         await refresh();
                         connected = true;
                       }),

@@ -39,6 +39,13 @@ type handler func(http.ResponseWriter, *http.Request, string) error
 
 func (a *App) route(mux *http.ServeMux, pattern, access string, h handler) {
 	mux.HandleFunc(pattern, func(w http.ResponseWriter, r *http.Request) {
+		start := time.Now()
+		defer func() {
+			if elapsed := time.Since(start); elapsed > 2*time.Second &&
+				strings.HasPrefix(r.URL.Path, "/api/") {
+				log.Printf("slow %s %s client=%q from=%s in %s", r.Method, r.URL.Path, r.Header.Get("X-Family-Client"), r.RemoteAddr, elapsed)
+			}
+		}()
 		// Client kind is a public display hint, not a credential. This server
 		// deliberately permits management from the trusted home LAN.
 		role := "child"
@@ -207,7 +214,7 @@ FROM videos v LEFT JOIN watch_stats s ON s.video_id=v.id`
 		w.WriteHeader(http.StatusFound)
 		return nil
 	})
-	return mux
+	return withGzipJSON(mux)
 }
 
 var shareURL = regexp.MustCompile(`https?://[^\s<>"，。；！]+`)

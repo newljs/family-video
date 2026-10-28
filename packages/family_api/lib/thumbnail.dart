@@ -3,6 +3,7 @@ import 'dart:io';
 
 import 'package:flutter/widgets.dart';
 import 'package:http/http.dart' as http;
+import 'package:http/io_client.dart';
 import 'package:path_provider/path_provider.dart';
 
 /// 缩略图按视频 ID 落盘缓存。缩略图内容与视频 ID 绑定不变，App 重启、
@@ -11,6 +12,14 @@ class ThumbnailCache {
   ThumbnailCache._();
 
   static final ThumbnailCache instance = ThumbnailCache._();
+
+  // 封面数量多，复用连接避免每次缩略图都重新握手。
+  static final http.Client _client = IOClient(
+    HttpClient()
+      ..connectionTimeout = const Duration(seconds: 6)
+      ..idleTimeout = const Duration(seconds: 30)
+      ..maxConnectionsPerHost = 4,
+  );
 
   /// 测试注入：缩略图目录与网络获取。
   Future<Directory> Function()? directory;
@@ -32,7 +41,7 @@ class ThumbnailCache {
     }
     try {
       final response =
-          await (fetch ?? http.get)(Uri.parse(url)).timeout(const Duration(seconds: 30));
+          await (fetch ?? _client.get)(Uri.parse(url)).timeout(const Duration(seconds: 30));
       if (response.statusCode != 200 || response.bodyBytes.isEmpty) {
         return null;
       }

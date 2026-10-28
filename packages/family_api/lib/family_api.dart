@@ -1,10 +1,19 @@
 import 'dart:convert';
 import 'dart:async';
+import 'dart:io';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:http/http.dart' as http;
+import 'package:http/io_client.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 export 'package:family_models/family_models.dart';
 export 'thumbnail.dart';
+
+http.Client _createClient() => IOClient(
+  HttpClient()
+    ..connectionTimeout = const Duration(seconds: 6)
+    ..idleTimeout = const Duration(seconds: 45)
+    ..maxConnectionsPerHost = 8,
+);
 
 class FamilyApiException implements Exception {
   final String message;
@@ -53,19 +62,30 @@ String friendlyError(Object error) {
 }
 
 class FamilyApi {
-  final http.Client? _client;
+  final http.Client _client;
+  final bool _ownsClient;
   final String clientRole;
   FamilyApi({http.Client? client, this.clientRole = 'child'})
-    : _client = client;
+    : _client = client ?? _createClient(),
+      _ownsClient = client == null;
   String server = '';
   // Retained only to find pre-0.4 offline files and favorites. Never transmitted.
   String token = '';
+  String _healthServer = '';
+  DateTime? _healthAt;
+  static const _healthTTL = Duration(minutes: 5);
   static const _storage = FlutterSecureStorage();
   Map<String, String> get headers => {'X-Family-Client': clientRole};
   Uri uri(String path) => Uri.parse('$server$path');
+  void dispose() {
+    if (_ownsClient) _client.close();
+  }
+
   Future<void> restore() async {
     final prefs = await SharedPreferences.getInstance();
     server = prefs.getString('server') ?? '';
+    _healthServer = '';
+    _healthAt = null;
     final cachedIdentity = prefs.getString('cache_identity_$server');
     if (cachedIdentity != null) {
       token = cachedIdentity;
@@ -78,7 +98,15 @@ class FamilyApi {
     }
   }
 
-  Future<void> checkServer() async {
+  Future<void> checkServer({bool force = false}) async {
+    final now = DateTime.now();
+    if (!force &&
+        server.isNotEmpty &&
+        _healthServer == server &&
+        _healthAt != null &&
+        now.difference(_healthAt!) < _healthTTL) {
+      return;
+    }
     final health = await request('GET', '/health');
     if (health is! Map ||
         health['access_mode'] != 'open_lan' ||
@@ -88,6 +116,8 @@ class FamilyApi {
         '请先将家庭电脑服务端更新到 0.7 或更新版本，以支持视频管理、描述和流媒体播放。',
       );
     }
+    _healthServer = server;
+    _healthAt = now;
   }
 
   Future<void> save(String address) async {
@@ -103,7 +133,7 @@ class FamilyApi {
     }
     final candidate = FamilyApi(client: _client, clientRole: clientRole)
       ..server = address.trim().replaceFirst(RegExp(r'/+$'), '');
-    await candidate.checkServer();
+    await candidate.checkServer(force: true);
     // Verify first so an unreachable address never replaces a working connection.
     final prefs = await SharedPreferences.getInstance();
     if (server.isNotEmpty)
@@ -116,6 +146,8 @@ class FamilyApi {
     }
     await prefs.setString('server', candidate.server);
     server = candidate.server;
+    _healthServer = server;
+    _healthAt = DateTime.now();
   }
 
   Future<void> logout() async {
@@ -125,6 +157,8 @@ class FamilyApi {
     await prefs.remove('server');
     server = '';
     token = '';
+    _healthServer = '';
+    _healthAt = null;
     try {
       await _storage.delete(key: 'token');
     } catch (_) {}
@@ -149,16 +183,35 @@ class FamilyApi {
     return result;
   }
 
-  Future<dynamic> request(String method, String path, [Object? body]) async {
+  static bool _transient(Object error) =>
+      error is TimeoutException ||
+      error is SocketException ||
+      error is http.ClientException;
+
+  Future<dynamic> _send(String method, String path, Object? body) async {
     final request = http.Request(method, uri(path));
     request.headers.addAll({...headers, 'Content-Type': 'application/json'});
     if (body != null) request.body = jsonEncode(body);
     final response = await http.Response.fromStream(
-      await (_client == null ? request.send() : _client.send(request)).timeout(
-        const Duration(seconds: 15),
-      ),
+      await _client.send(request).timeout(const Duration(seconds: 15)),
     ).timeout(const Duration(seconds: 30));
     return decode(response);
+  }
+
+  /// GET 在连接被重置或超时时自动重试一次；写请求绝不自动重试，
+  /// 避免导入、上传或观看统计在服务端已提交后被重复执行。
+  Future<dynamic> request(String method, String path, [Object? body]) async {
+    final attempts = method == 'GET' ? 2 : 1;
+    var delay = const Duration(milliseconds: 400);
+    for (var attempt = 0; ; attempt++) {
+      try {
+        return await _send(method, path, body);
+      } catch (error) {
+        if (attempt + 1 >= attempts || !_transient(error)) rethrow;
+        await Future<void>.delayed(delay);
+        delay *= 2;
+      }
+    }
   }
 
   Future<void> upload(String path, String title) async {
@@ -168,7 +221,7 @@ class FamilyApi {
     req.files.add(await http.MultipartFile.fromPath('file', path));
     decode(
       await http.Response.fromStream(
-        await req.send(),
+        await _client.send(req).timeout(const Duration(minutes: 15)),
       ).timeout(const Duration(minutes: 15)),
     );
   }
