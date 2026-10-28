@@ -1,7 +1,9 @@
 import 'dart:convert';
 import 'dart:async';
+import 'dart:io';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:http/http.dart' as http;
+import 'package:http/io_client.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 export 'package:family_models/family_models.dart';
 export 'thumbnail.dart';
@@ -9,6 +11,13 @@ export 'startup_cache.dart';
 export 'background_sync.dart';
 export 'discovery.dart';
 export 'discovery_panel.dart';
+
+http.Client _createClient() => IOClient(
+  HttpClient()
+    ..connectionTimeout = const Duration(seconds: 6)
+    ..idleTimeout = const Duration(seconds: 45)
+    ..maxConnectionsPerHost = 8,
+);
 
 class FamilyApiException implements Exception {
   final String message;
@@ -61,19 +70,26 @@ class FamilyApi {
   final bool _ownsClient;
   final String clientRole;
   FamilyApi({http.Client? client, this.clientRole = 'child'})
-    : _client = client ?? http.Client(),
+    : _client = client ?? _createClient(),
       _ownsClient = client == null;
-  String? _checkedServer;
-  DateTime? _checkedAt;
   String server = '';
   // Retained only to find pre-0.4 offline files and favorites. Never transmitted.
   String token = '';
+  String _healthServer = '';
+  DateTime? _healthAt;
+  static const _healthTTL = Duration(minutes: 5);
   static const _storage = FlutterSecureStorage();
   Map<String, String> get headers => {'X-Family-Client': clientRole};
   Uri uri(String path) => Uri.parse('$server$path');
+  void dispose() {
+    if (_ownsClient) _client.close();
+  }
+
   Future<void> restore() async {
     final prefs = await SharedPreferences.getInstance();
     server = prefs.getString('server') ?? '';
+    _healthServer = '';
+    _healthAt = null;
     final cachedIdentity = prefs.getString('cache_identity_$server');
     if (cachedIdentity != null) {
       token = cachedIdentity;
@@ -90,11 +106,14 @@ class FamilyApi {
 
   Future<void> checkServer({bool force = false}) async {
     final checking = server;
+    final now = DateTime.now();
     if (!force &&
-        _checkedServer == checking &&
-        _checkedAt != null &&
-        DateTime.now().difference(_checkedAt!) < const Duration(minutes: 5))
+        checking.isNotEmpty &&
+        _healthServer == checking &&
+        _healthAt != null &&
+        now.difference(_healthAt!) < _healthTTL) {
       return;
+    }
     final health = await requestWithTimeout(
       'GET',
       '/health',
@@ -109,8 +128,8 @@ class FamilyApi {
       );
     }
     if (server == checking) {
-      _checkedServer = checking;
-      _checkedAt = DateTime.now();
+      _healthServer = checking;
+      _healthAt = DateTime.now();
     }
   }
 
@@ -127,7 +146,7 @@ class FamilyApi {
     }
     final candidate = FamilyApi(client: _client, clientRole: clientRole)
       ..server = address.trim().replaceFirst(RegExp(r'/+$'), '');
-    await candidate.checkServer();
+    await candidate.checkServer(force: true);
     // Verify first so an unreachable address never replaces a working connection.
     final prefs = await SharedPreferences.getInstance();
     if (server.isNotEmpty)
@@ -140,8 +159,8 @@ class FamilyApi {
     }
     await prefs.setString('server', candidate.server);
     server = candidate.server;
-    _checkedServer = candidate._checkedServer;
-    _checkedAt = candidate._checkedAt;
+    _healthServer = server;
+    _healthAt = DateTime.now();
   }
 
   Future<void> logout() async {
@@ -151,6 +170,8 @@ class FamilyApi {
     await prefs.remove('server');
     server = '';
     token = '';
+    _healthServer = '';
+    _healthAt = null;
     try {
       await _storage.delete(key: 'token');
     } catch (_) {}
@@ -175,8 +196,25 @@ class FamilyApi {
     return result;
   }
 
+  static bool _transient(Object error) =>
+      error is TimeoutException ||
+      error is SocketException ||
+      error is http.ClientException;
+
+  /// GET 在连接被重置或超时时自动重试一次；写请求绝不自动重试，
+  /// 避免导入、上传或观看统计在服务端已提交后被重复执行。
   Future<dynamic> request(String method, String path, [Object? body]) async {
-    return requestWithTimeout(method, path, body: body);
+    final attempts = method == 'GET' ? 2 : 1;
+    var delay = const Duration(milliseconds: 400);
+    for (var attempt = 0; ; attempt++) {
+      try {
+        return await requestWithTimeout(method, path, body: body);
+      } catch (error) {
+        if (attempt + 1 >= attempts || !_transient(error)) rethrow;
+        await Future<void>.delayed(delay);
+        delay *= 2;
+      }
+    }
   }
 
   Future<dynamic> requestWithTimeout(
@@ -216,7 +254,7 @@ class FamilyApi {
     req.files.add(await http.MultipartFile.fromPath('file', path));
     decode(
       await http.Response.fromStream(
-        await _client.send(req),
+        await _client.send(req).timeout(const Duration(minutes: 15)),
       ).timeout(const Duration(minutes: 15)),
     );
   }
