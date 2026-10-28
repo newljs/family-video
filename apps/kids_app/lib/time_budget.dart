@@ -34,11 +34,23 @@ class TimeBudget extends ChangeNotifier {
   String get _cacheKey => 'time_budget_$server';
   String get server => api.server;
 
+  void reset() {
+    limitMinutes = 0;
+    watchedMsToday = 0;
+    afterLimitCollectionId = '';
+    day = _today();
+    _unsavedSpends = 0;
+    notifyListeners();
+  }
+
   /// 启动时先恢复本地缓存：离线或服务端还没响应时，也能执行上次的限额。
   Future<void> restoreCached() async {
     if (server.isEmpty) return;
+    final restoringServer = server;
+    final key = _cacheKey;
     try {
-      final raw = (await SharedPreferences.getInstance()).getString(_cacheKey);
+      final raw = (await SharedPreferences.getInstance()).getString(key);
+      if (server != restoringServer) return;
       if (raw == null) return;
       final saved = jsonDecode(raw) as Map<String, dynamic>;
       limitMinutes = (saved['limit_minutes'] as num?)?.toInt() ?? 0;
@@ -56,9 +68,16 @@ class TimeBudget extends ChangeNotifier {
 
   /// 从服务端读取限额与今日已看；失败时静默保留现有额度。
   Future<void> load() async {
+    final loadingServer = server;
     try {
-      final data = await api.request('GET', '/api/settings/time-limit');
-      if (data is Map) apply(Map<String, dynamic>.from(data));
+      final data = await api.requestWithTimeout(
+        'GET',
+        '/api/settings/time-limit',
+        timeout: const Duration(seconds: 5),
+      );
+      if (data is Map && server == loadingServer) {
+        apply(Map<String, dynamic>.from(data));
+      }
     } catch (_) {
       /* 旧服务端没有该接口或暂时离线：保持本地口径。 */
     }
@@ -102,7 +121,7 @@ class TimeBudget extends ChangeNotifier {
   }
 
   Future<void> _cache() async {
-    if (server.isEmpty || limitMinutes == 0) return;
+    if (server.isEmpty) return;
     _unsavedSpends = 0;
     try {
       await (await SharedPreferences.getInstance()).setString(

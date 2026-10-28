@@ -19,6 +19,12 @@ func migrate(db *sql.DB, c Config, version int) error {
 			return fmt.Errorf("升级前备份失败，数据库保持原状: %w", err)
 		}
 	}
+	if version >= 3 && version < 6 {
+		backup := filepath.Join(c.Data, "database", "before-v6-"+time.Now().UTC().Format("20060102-150405")+"-"+ID()[:8]+".sqlite3")
+		if _, err := db.Exec("VACUUM INTO ?", backup); err != nil {
+			return fmt.Errorf("升级前备份失败，数据库保持原状: %w", err)
+		}
+	}
 	tx, err := db.Begin()
 	if err != nil {
 		return err
@@ -56,7 +62,16 @@ func migrate(db *sql.DB, c Config, version int) error {
 			return err
 		}
 	}
-	if _, err = tx.Exec("PRAGMA user_version=5"); err != nil {
+	items, err := query(tx, "SELECT id,title,description FROM videos WHERE id NOT IN (SELECT video_id FROM video_catalog)")
+	if err != nil {
+		return err
+	}
+	for _, item := range items {
+		if err = indexVideo(tx, item["id"].(string), item["title"].(string), item["description"].(string)); err != nil {
+			return err
+		}
+	}
+	if _, err = tx.Exec("PRAGMA user_version=6"); err != nil {
 		return err
 	}
 	return tx.Commit()

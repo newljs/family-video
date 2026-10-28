@@ -31,6 +31,8 @@ cookies.txt
 cookies.json
 *.iml
 .idea/
+.gradle/
+.kotlin/
 
 # macOS
 .DS_Store

@@ -39,8 +39,30 @@ class FeedPlayerCache {
     return entry;
   }
 
+  static String _resource(Object? value) {
+    final raw = value?.toString() ?? '';
+    final uri = Uri.tryParse(raw);
+    if (uri == null ||
+        !RegExp(
+          r'^/media/[A-Za-z0-9_-]{1,80}/(video|stream\.m3u8)$',
+        ).hasMatch(uri.path)) {
+      return raw;
+    }
+    final query =
+        Map<String, List<String>>.from(uri.queryParametersAll)
+          ..remove('expires')
+          ..remove('role')
+          ..remove('sig');
+    return uri
+        .replace(
+          queryParameters: query.isEmpty ? null : query,
+          query: query.isEmpty ? '' : null,
+        )
+        .toString();
+  }
+
   static String sourceKey(Map<String, dynamic> video, FamilyApi api) =>
-      '${video['local_path'] ?? ''}|${api.server}|${video['stream_url'] ?? ''}|${video['media_url'] ?? ''}';
+      '${video['local_path'] ?? ''}|${api.server}|${_resource(video['stream_url'])}|${_resource(video['media_url'])}';
 
   void releaseInactive(CachedFeedPlayer? active) {
     for (final id in _players.keys.toList()) {
@@ -75,12 +97,13 @@ class CachedFeedPlayer {
   ) {
     final streaming =
         video['local_path'] == null && video['stream_url'] != null;
-    controller = video['local_path'] != null
-        ? VideoPlayerController.file(File(video['local_path']))
-        : VideoPlayerController.networkUrl(
-            api.uri(streaming ? video['stream_url'] : video['media_url']),
-            formatHint: streaming ? VideoFormat.hls : null,
-          );
+    controller =
+        video['local_path'] != null
+            ? VideoPlayerController.file(File(video['local_path']))
+            : VideoPlayerController.networkUrl(
+              api.uri(streaming ? video['stream_url'] : video['media_url']),
+              formatHint: streaming ? VideoFormat.hls : null,
+            );
     ready = _initialize(video, api, progress, streaming);
   }
 

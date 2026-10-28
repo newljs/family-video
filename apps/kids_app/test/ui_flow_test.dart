@@ -100,6 +100,8 @@ void main() {
     });
     await tester.pumpAndSettle();
     await shot(tester, 'v05-kids-connection');
+    await tester.tap(find.text('扫码或手动输入'));
+    await tester.pumpAndSettle();
     await tester.enterText(find.byType(TextField), 'invalid');
     await tester.ensureVisible(find.text('进入放映室'));
     await tester.pumpAndSettle();
@@ -243,7 +245,13 @@ void main() {
       await tester.pumpAndSettle();
       await tester.enterText(find.byType(TextField), '太阳系');
       await tester.pumpAndSettle();
-      expect(find.text('远程精选：认识太阳系'), findsOneWidget);
+      expect(
+        find.descendant(
+          of: find.byType(KidsSearchSheet),
+          matching: find.text('远程精选：认识太阳系'),
+        ),
+        findsOneWidget,
+      );
       await tester.enterText(find.byType(TextField), '找不到的标题');
       await tester.pumpAndSettle();
       expect(find.text('没有找到相关视频'), findsOneWidget);

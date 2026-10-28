@@ -105,12 +105,22 @@ void main() {
     expect(find.text('已连接'), findsOneWidget);
     expect(tester.takeException(), isNull);
     await capture(tester, 'v05-parent-inbox');
+    await tester.ensureVisible(find.text('查看待同步收集箱（1）'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('查看待同步收集箱（1）'));
+    await tester.pumpAndSettle();
+    expect(find.text('同步 1 条到家庭电脑'), findsOneWidget);
+    await capture(tester, 'parent-pending-inbox');
+    await tester.pageBack();
+    await tester.pumpAndSettle();
     await tester.scrollUntilVisible(
-      find.text('导入任务'),
+      find.text('查看导入任务列表'),
       300,
       scrollable: find.byType(Scrollable).first,
     );
-    await tester.ensureVisible(find.text('导入任务'));
+    await tester.ensureVisible(find.text('查看导入任务列表'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('查看导入任务列表'));
     await tester.pumpAndSettle();
     await tester.tap(find.widgetWithText(ChoiceChip, '失败'));
     await tester.pumpAndSettle();
@@ -119,15 +129,15 @@ void main() {
     await tester.tap(find.text('未能完成导入'));
     await tester.pumpAndSettle();
     expect(find.textContaining('抖音接口或视频源拒绝访问'), findsOneWidget);
-    await tester.ensureVisible(find.text('导入任务'));
-    await tester.pumpAndSettle();
     await capture(tester, 'v05-parent-tasks');
     await tester.ensureVisible(find.text('重试'));
     await tester.tap(find.text('重试'));
     await tester.pumpAndSettle();
     expect(retried, isTrue);
     expect(find.text('暂无此类任务'), findsOneWidget);
-    await tester.tap(find.text('视频库'));
+    await tester.pageBack();
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('视频库').last);
     await tester.pumpAndSettle();
     expect(find.text('一起认识奇妙的大自然'), findsOneWidget);
     expect(find.byType(SwitchListTile), findsNothing);
@@ -141,7 +151,7 @@ void main() {
     await tester.pumpWidget(const SizedBox());
   });
   testWidgets(
-    'active tasks refresh automatically and polling stops when finished',
+    'active tasks outside the first page refresh automatically until finished',
     (tester) async {
       SharedPreferences.setMockInitialValues({'server': 'http://home:8765'});
       FlutterSecureStorage.setMockInitialValues({});
@@ -160,14 +170,18 @@ void main() {
           }
           if (r.url.path == '/api/tasks') {
             fetches++;
-            body = [
-              {
-                'id': 'task',
-                'title': '正在导入',
-                'kind': 'douyin',
-                'state': fetches == 1 ? 'running' : 'completed',
-              },
-            ];
+            body = {
+              'items': [
+                {
+                  'id': 'task',
+                  'title': '正在导入',
+                  'kind': 'douyin',
+                  'state': 'completed',
+                },
+              ],
+              'total': 21,
+              'active': fetches == 1 ? 1 : 0,
+            };
           }
           return http.Response(
             jsonEncode(body),
@@ -177,10 +191,7 @@ void main() {
         }),
       );
       await tester.pumpWidget(
-        MaterialApp(
-          theme: parentTheme(),
-          home: ParentHome(api: api),
-        ),
+        MaterialApp(theme: parentTheme(), home: ParentHome(api: api)),
       );
       await tester.pumpAndSettle();
       expect(fetches, 1);

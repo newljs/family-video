@@ -3,6 +3,7 @@ import 'feed_player_cache.dart';
 import 'playback_progress.dart';
 import 'time_budget.dart';
 import 'watch_stats.dart';
+import 'watch_sampler.dart';
 import 'package:family_api/family_api.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -16,7 +17,7 @@ const cyan = Color(0xff25f4ee);
 
 /// 门面 video_player 未暴露倍速设置，经平台接口直调（fork 的 ExoPlayer 已实现）。
 Future<void> setPlayerSpeed(VideoPlayerController? controller, double speed) {
-    if (controller == null || controller.playerId < 0) {
+  if (controller == null || controller.playerId < 0) {
     return Future.value();
   }
   return VideoPlayerPlatform.instance.setPlaybackSpeed(
@@ -286,7 +287,7 @@ class _FeedViewState extends State<FeedView> with WidgetsBindingObserver {
     widget.api,
     onSync: (data) => widget.budget?.apply(data),
   );
-  final Map<String, Duration> lastSample = {};
+  final WatchSampler watchSampler = WatchSampler();
   final Set<String> completedSeen = {};
   bool playCounted = false;
   // 休息提示生效：连续观看 20 分钟到点，且今日额度没有先耗尽。
@@ -310,16 +311,20 @@ class _FeedViewState extends State<FeedView> with WidgetsBindingObserver {
     if (playingId == null || p?.value.isInitialized != true) return;
     if (!restoringPosition) {
       progress.record(playingId!, p!.value.position, p.value.duration);
-      // 统计采样：正向播放增量计时长；首次开播计一次播放；接近片尾记完播。
+      // 计真实经过的观看时长，快进跳跃与倍速不额外扣额度。
       final position = p.value.position;
-      final last = lastSample[playingId!];
-      if (last != null && position > last) {
-        final delta = position - last;
+      final delta = watchSampler.sample(
+        at: DateTime.now(),
+        position: position,
+        playing: p.value.isPlaying && widget.active && appActive,
+        buffering: p.value.isBuffering,
+        speed: p.value.playbackSpeed,
+      );
+      if (delta > Duration.zero) {
         reporter.record(playingId!, watched: delta);
-        // 时长额度与统计同口径：只计正向播放增量，暂停与回拖不计。
+        // 时长额度与统计同口径。
         widget.budget?.spend(delta.inMilliseconds);
       }
-      lastSample[playingId!] = position;
       if (!playCounted && p.value.isPlaying) {
         playCounted = true;
         reporter.record(playingId!, played: true);
@@ -327,7 +332,8 @@ class _FeedViewState extends State<FeedView> with WidgetsBindingObserver {
       if (!completedSeen.contains(playingId) &&
           p.value.duration > Duration.zero &&
           (p.value.isCompleted ||
-              position >= p.value.duration - const Duration(milliseconds: 800))) {
+              position >=
+                  p.value.duration - const Duration(milliseconds: 800))) {
         completedSeen.add(playingId!);
         reporter.record(playingId!, completed: true);
       }
@@ -368,19 +374,48 @@ class _FeedViewState extends State<FeedView> with WidgetsBindingObserver {
   void didUpdateWidget(covariant FeedView oldWidget) {
     super.didUpdateWidget(oldWidget);
     final next = widget.items.indexWhere((v) => '${v['id']}' == playingId);
+    if (next < 0 && widget.items.isNotEmpty) {
+      final target = index.clamp(0, widget.items.length - 1);
+      load(target);
+      final targetId = playingId;
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (mounted &&
+            pages.hasClients &&
+            target < widget.items.length &&
+            '${widget.items[target]['id']}' == targetId &&
+            playingId == targetId) {
+          pages.jumpToPage(target);
+        }
+      });
+    } else if (next >= 0 && next != index) {
+      index = next;
+      final targetId = playingId;
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (mounted &&
+            pages.hasClients &&
+            next < widget.items.length &&
+            '${widget.items[next]['id']}' == targetId &&
+            playingId == targetId) {
+          pages.jumpToPage(next);
+        }
+      });
+    }
     if (next >= 0 &&
-        activeEntry?.source !=
-            FeedPlayerCache.sourceKey(
-              Map<String, dynamic>.from(widget.items[next]),
-              widget.api,
-            )) {
+        (activeEntry?.failed == true ||
+            activeEntry?.controller.value.hasError == true ||
+            activeEntry?.source !=
+                FeedPlayerCache.sourceKey(
+                  Map<String, dynamic>.from(widget.items[next]),
+                  widget.api,
+                ))) {
       load(next);
     }
     if (oldWidget.active != widget.active) {
       if (!widget.active) {
-        resumeWhenActive = player?.value.isInitialized == true
-            ? player!.value.isPlaying
-            : !blocked;
+        resumeWhenActive =
+            player?.value.isInitialized == true
+                ? player!.value.isPlaying
+                : !blocked;
         remember();
         unawaited(progress.flush());
         player?.pause();
@@ -420,6 +455,7 @@ class _FeedViewState extends State<FeedView> with WidgetsBindingObserver {
     final entry = playerCache.obtain(v, widget.api, progress);
     activeEntry = entry;
     playingId = '${v['id']}';
+    watchSampler.reset();
     playCounted = false; // 再次进入该视频重新计一次播放
     restoringPosition = true;
     player = entry.controller;
@@ -651,170 +687,191 @@ class _FeedViewState extends State<FeedView> with WidgetsBindingObserver {
     },
     child: Focus(
       autofocus: true,
-      child: blocked
-          ? const Center(
-              child: Text(
-                '看了二十分钟啦\n休息一下吧',
-                textAlign: TextAlign.center,
-                style: TextStyle(color: Colors.white, fontSize: 26),
-              ),
-            )
-          : Stack(
-              fit: StackFit.expand,
-              children: [
-                NotificationListener<ScrollNotification>(
-            onNotification: onEdgeScroll,
-            child: PageView.builder(
-              controller: pages,
-              scrollDirection: Axis.vertical,
-              itemCount: widget.items.length,
-              onPageChanged: load,
-              itemBuilder: (context, i) {
-                final v = Map<String, dynamic>.from(widget.items[i]);
-                final p = i == index ? player : null;
-                return Stack(
-                  fit: StackFit.expand,
-                  children: [
-                    GestureDetector(
-                      onTap: toggle,
-                      onDoubleTap: () {
-                        if (!widget.favorites.contains(v['id'])) {
-                          widget.onLike(v['id']);
+      child:
+          blocked
+              ? const Center(
+                child: Text(
+                  '看了二十分钟啦\n休息一下吧',
+                  textAlign: TextAlign.center,
+                  style: TextStyle(color: Colors.white, fontSize: 26),
+                ),
+              )
+              : Stack(
+                fit: StackFit.expand,
+                children: [
+                  NotificationListener<ScrollNotification>(
+                    onNotification: onEdgeScroll,
+                    child: PageView.builder(
+                      controller: pages,
+                      scrollDirection: Axis.vertical,
+                      itemCount: widget.items.length,
+                      onPageChanged: (next) {
+                        if (next < 0 || next >= widget.items.length) return;
+                        if ('${widget.items[next]['id']}' == playingId) {
+                          if (index != next) setState(() => index = next);
+                        } else {
+                          load(next);
                         }
                       },
-                      onLongPressStart: (_) => startSpeedBoost(),
-                      onLongPressEnd: (_) => stopSpeedBoost(),
-                      onLongPressCancel: stopSpeedBoost,
-                      onHorizontalDragStart: startSeekPreview,
-                      onHorizontalDragUpdate: updateSeekPreview,
-                      onHorizontalDragEnd: endSeekPreview,
-                      onHorizontalDragCancel: cancelSeekPreview,
-                      behavior: HitTestBehavior.opaque,
-                      child: Center(
-                        child: p?.value.isInitialized == true
-                            ? AspectRatio(
-                                aspectRatio: p!.value.aspectRatio,
-                                child: VideoPlayer(p),
-                              )
-                            : error != null && i == index
-                            ? Text(
-                                error!,
-                                textAlign: TextAlign.center,
-                                style: const TextStyle(color: Colors.white70),
-                              )
-                            : i != index
-                            ? const SizedBox.shrink()
-                            : const CircularProgressIndicator(
-                                color: Colors.white70,
-                                strokeWidth: 2,
+                      itemBuilder: (context, i) {
+                        final v = Map<String, dynamic>.from(widget.items[i]);
+                        final p = i == index ? player : null;
+                        return Stack(
+                          fit: StackFit.expand,
+                          children: [
+                            GestureDetector(
+                              onTap: toggle,
+                              onDoubleTap: () {
+                                if (!widget.favorites.contains(v['id'])) {
+                                  widget.onLike(v['id']);
+                                }
+                              },
+                              onLongPressStart: (_) => startSpeedBoost(),
+                              onLongPressEnd: (_) => stopSpeedBoost(),
+                              onLongPressCancel: stopSpeedBoost,
+                              onHorizontalDragStart: startSeekPreview,
+                              onHorizontalDragUpdate: updateSeekPreview,
+                              onHorizontalDragEnd: endSeekPreview,
+                              onHorizontalDragCancel: cancelSeekPreview,
+                              behavior: HitTestBehavior.opaque,
+                              child: Center(
+                                child:
+                                    p?.value.isInitialized == true
+                                        ? AspectRatio(
+                                          aspectRatio: p!.value.aspectRatio,
+                                          child: VideoPlayer(p),
+                                        )
+                                        : error != null && i == index
+                                        ? Text(
+                                          error!,
+                                          textAlign: TextAlign.center,
+                                          style: const TextStyle(
+                                            color: Colors.white70,
+                                          ),
+                                        )
+                                        : i != index
+                                        ? const SizedBox.shrink()
+                                        : const CircularProgressIndicator(
+                                          color: Colors.white70,
+                                          strokeWidth: 2,
+                                        ),
                               ),
-                      ),
+                            ),
+                            if (p?.value.isInitialized == true)
+                              ValueListenableBuilder<VideoPlayerValue>(
+                                valueListenable: p!,
+                                builder:
+                                    (context, value, _) => IgnorePointer(
+                                      child: Center(
+                                        child: AnimatedOpacity(
+                                          opacity: value.isPlaying ? 0 : 1,
+                                          duration: const Duration(
+                                            milliseconds: 150,
+                                          ),
+                                          child: const Icon(
+                                            Icons.play_arrow_rounded,
+                                            size: 82,
+                                            color: Colors.white54,
+                                          ),
+                                        ),
+                                      ),
+                                    ),
+                              ),
+                            if (p?.value.isInitialized == true)
+                              ValueListenableBuilder<VideoPlayerValue>(
+                                valueListenable: p!,
+                                builder:
+                                    (_, value, _) =>
+                                        value.isBuffering
+                                            ? const IgnorePointer(
+                                              child: Center(
+                                                child: SizedBox(
+                                                  width: 30,
+                                                  height: 30,
+                                                  child:
+                                                      CircularProgressIndicator(
+                                                        color: Colors.white70,
+                                                        strokeWidth: 2,
+                                                      ),
+                                                ),
+                                              ),
+                                            )
+                                            : const SizedBox.shrink(),
+                              ),
+                            if (speeding && i == index)
+                              const IgnorePointer(
+                                child: Center(child: SpeedBadge()),
+                              ),
+                            if (loadingLatest)
+                              const IgnorePointer(
+                                child: Center(child: LoadingLatestBadge()),
+                              ),
+                            if (seekPreview != null && i == index)
+                              IgnorePointer(
+                                child: Center(
+                                  child: SeekPreviewBadge(
+                                    target: seekPreview!,
+                                    total: seekTotal,
+                                    forward: seekForward,
+                                  ),
+                                ),
+                              ),
+                            FeedOverlay(
+                              video: v,
+                              liked: widget.favorites.contains(v['id']),
+                              downloaded:
+                                  widget.downloaded.contains(v['id']) ||
+                                  v['local_path'] != null,
+                              saving: saving,
+                              onLike: () => widget.onLike(v['id']),
+                              onDownload: () => save(v),
+                              onCollections: widget.onCollections,
+                            ),
+                            if (p?.value.isInitialized == true)
+                              Positioned(
+                                left: 0,
+                                right: 0,
+                                bottom: 0,
+                                child: VideoProgressIndicator(
+                                  p!,
+                                  allowScrubbing: true,
+                                  padding: const EdgeInsets.symmetric(
+                                    vertical: 6,
+                                  ),
+                                  colors: const VideoProgressColors(
+                                    playedColor: Colors.white,
+                                    bufferedColor: Colors.white30,
+                                    backgroundColor: Colors.white12,
+                                  ),
+                                ),
+                              ),
+                          ],
+                        );
+                      },
                     ),
-                    if (p?.value.isInitialized == true)
-                      ValueListenableBuilder<VideoPlayerValue>(
-                        valueListenable: p!,
-                        builder: (context, value, _) => IgnorePointer(
-                          child: Center(
-                            child: AnimatedOpacity(
-                              opacity: value.isPlaying ? 0 : 1,
-                              duration: const Duration(milliseconds: 150),
-                              child: const Icon(
-                                Icons.play_arrow_rounded,
-                                size: 82,
-                                color: Colors.white54,
-                              ),
+                  ),
+                  if (widget.budget?.limited == true &&
+                      widget.budget?.exhausted != true)
+                    Positioned(
+                      top: 0,
+                      left: 0,
+                      right: 0,
+                      child: SafeArea(
+                        bottom: false,
+                        child: Align(
+                          alignment: Alignment.topCenter,
+                          child: Padding(
+                            padding: const EdgeInsets.only(top: 62),
+                            child: RemainingBadge(
+                              minutes: widget.budget!.remainingMinutes,
+                              urgent: widget.budget!.remainingMs <= 5 * 60000,
                             ),
                           ),
                         ),
                       ),
-                    if (p?.value.isInitialized == true)
-                      ValueListenableBuilder<VideoPlayerValue>(
-                        valueListenable: p!,
-                        builder: (_, value, _) => value.isBuffering
-                            ? const IgnorePointer(
-                                child: Center(
-                                  child: SizedBox(
-                                    width: 30,
-                                    height: 30,
-                                    child: CircularProgressIndicator(
-                                      color: Colors.white70,
-                                      strokeWidth: 2,
-                                    ),
-                                  ),
-                                ),
-                              )
-                            : const SizedBox.shrink(),
-                      ),
-                    if (speeding && i == index)
-                      const IgnorePointer(child: Center(child: SpeedBadge())),
-                    if (loadingLatest)
-                      const IgnorePointer(
-                        child: Center(child: LoadingLatestBadge()),
-                      ),
-                    if (seekPreview != null && i == index)
-                      IgnorePointer(
-                        child: Center(
-                          child: SeekPreviewBadge(
-                            target: seekPreview!,
-                            total: seekTotal,
-                            forward: seekForward,
-                          ),
-                        ),
-                      ),
-                    FeedOverlay(
-                      video: v,
-                      liked: widget.favorites.contains(v['id']),
-                      downloaded:
-                          widget.downloaded.contains(v['id']) ||
-                          v['local_path'] != null,
-                      saving: saving,
-                      onLike: () => widget.onLike(v['id']),
-                      onDownload: () => save(v),
-                      onCollections: widget.onCollections,
                     ),
-                    if (p?.value.isInitialized == true)
-                      Positioned(
-                        left: 0,
-                        right: 0,
-                        bottom: 0,
-                        child: VideoProgressIndicator(
-                          p!,
-                          allowScrubbing: true,
-                          padding: const EdgeInsets.symmetric(vertical: 6),
-                          colors: const VideoProgressColors(
-                            playedColor: Colors.white,
-                            bufferedColor: Colors.white30,
-                            backgroundColor: Colors.white12,
-                          ),
-                        ),
-                      ),
-                  ],
-                );
-              },
-            ),
-                ),
-                if (widget.budget?.limited == true &&
-                    widget.budget?.exhausted != true)
-                  Positioned(
-                    top: 0,
-                    left: 0,
-                    right: 0,
-                    child: SafeArea(
-                      bottom: false,
-                      child: Align(
-                        alignment: Alignment.topCenter,
-                        child: Padding(
-                          padding: const EdgeInsets.only(top: 62),
-                          child: RemainingBadge(
-                            minutes: widget.budget!.remainingMinutes,
-                            urgent: widget.budget!.remainingMs <= 5 * 60000,
-                          ),
-                        ),
-                      ),
-                    ),
-                  ),
-              ],
-            ),
+                ],
+              ),
     ),
   );
 }
@@ -828,7 +885,11 @@ String _mmss(Duration d) {
 class RemainingBadge extends StatelessWidget {
   final int minutes;
   final bool urgent;
-  const RemainingBadge({super.key, required this.minutes, required this.urgent});
+  const RemainingBadge({
+    super.key,
+    required this.minutes,
+    required this.urgent,
+  });
   @override
   Widget build(BuildContext context) => Container(
     padding: const EdgeInsets.symmetric(horizontal: 13, vertical: 7),
@@ -999,31 +1060,38 @@ class FeedNavigation extends StatelessWidget {
             child: InkWell(
               onTap: () => onSelect(i),
               child: Center(
-                child: i == 2
-                    ? Container(
-                        width: 44,
-                        height: 30,
-                        decoration: BoxDecoration(
-                          borderRadius: BorderRadius.circular(7),
-                          gradient: const LinearGradient(
-                            colors: [cyan, Colors.white, Colors.white, accent],
-                            stops: [0, .17, .83, 1],
+                child:
+                    i == 2
+                        ? Container(
+                          width: 44,
+                          height: 30,
+                          decoration: BoxDecoration(
+                            borderRadius: BorderRadius.circular(7),
+                            gradient: const LinearGradient(
+                              colors: [
+                                cyan,
+                                Colors.white,
+                                Colors.white,
+                                accent,
+                              ],
+                              stops: [0, .17, .83, 1],
+                            ),
+                          ),
+                          child: const Icon(
+                            Icons.download_rounded,
+                            color: Colors.black,
+                            size: 25,
+                          ),
+                        )
+                        : Text(
+                          ['首页', '合集', '离线', '喜欢', '我'][i],
+                          style: TextStyle(
+                            fontSize: 16,
+                            fontWeight: FontWeight.w600,
+                            color:
+                                i == selected ? Colors.white : Colors.white54,
                           ),
                         ),
-                        child: const Icon(
-                          Icons.download_rounded,
-                          color: Colors.black,
-                          size: 25,
-                        ),
-                      )
-                    : Text(
-                        ['首页', '合集', '离线', '喜欢', '我'][i],
-                        style: TextStyle(
-                          fontSize: 16,
-                          fontWeight: FontWeight.w600,
-                          color: i == selected ? Colors.white : Colors.white54,
-                        ),
-                      ),
               ),
             ),
           ),

@@ -57,6 +57,12 @@ void main() {
     await tester.pumpAndSettle();
 
     // 服务端限额 30 分钟，今日已看 12 分钟。
+    await tester.scrollUntilVisible(
+      find.text('儿童观看时长'),
+      150,
+      scrollable: find.byType(Scrollable).first,
+    );
+    await tester.pumpAndSettle();
     expect(find.text('儿童观看时长'), findsOneWidget);
     expect(find.text('每天最多 30 分钟'), findsOneWidget);
     expect(find.text('今日已看 12 分钟，还剩 18 分钟'), findsOneWidget);

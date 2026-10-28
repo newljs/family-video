@@ -84,12 +84,14 @@ class KidsConnectionPage extends StatelessWidget {
   final bool busy;
   final String? error;
   final VoidCallback onConnect;
+  final LanDiscovery? discovery;
   const KidsConnectionPage({
     super.key,
     required this.address,
     required this.busy,
     this.error,
     required this.onConnect,
+    this.discovery,
   });
   @override
   Widget build(BuildContext context) => Scaffold(
@@ -164,133 +166,161 @@ class KidsConnectionPage extends StatelessWidget {
                       color: Colors.white.withValues(alpha: .08),
                     ),
                   ),
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.stretch,
-                    children: [
-                      const Row(
-                        children: [
-                          Icon(Icons.wifi_rounded, size: 17, color: cyan),
-                          SizedBox(width: 8),
-                          Expanded(
-                            child: Text(
-                              '连接家庭电脑',
-                              style: TextStyle(
-                                fontWeight: FontWeight.w600,
+                  child: Material(
+                    type: MaterialType.transparency,
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.stretch,
+                      children: [
+                        const Row(
+                          children: [
+                            Icon(Icons.wifi_rounded, size: 17, color: cyan),
+                            SizedBox(width: 8),
+                            Expanded(
+                              child: Text(
+                                '连接家庭电脑',
+                                style: TextStyle(
+                                  fontWeight: FontWeight.w600,
+                                  color: Colors.white,
+                                ),
+                              ),
+                            ),
+                          ],
+                        ),
+                        const SizedBox(height: 8),
+                        const Text(
+                          '连接家庭 Wi-Fi，搜索并选择你的家庭电脑。',
+                          style: TextStyle(
+                            color: Colors.white54,
+                            fontSize: 12,
+                            height: 1.6,
+                          ),
+                        ),
+                        const SizedBox(height: 20),
+                        LanDiscoveryPanel(
+                          discovery: discovery,
+                          busy: busy,
+                          onSelect: (url) {
+                            address.text = url;
+                            onConnect();
+                          },
+                        ),
+                        if (error != null)
+                          Padding(
+                            padding: const EdgeInsets.only(top: 14),
+                            child: Row(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                                const Icon(
+                                  Icons.info_outline,
+                                  size: 16,
+                                  color: accent,
+                                ),
+                                const SizedBox(width: 7),
+                                Expanded(
+                                  child: Text(
+                                    error!,
+                                    style: const TextStyle(
+                                      color: Color(0xffff9eb0),
+                                      fontSize: 12,
+                                      height: 1.5,
+                                    ),
+                                  ),
+                                ),
+                              ],
+                            ),
+                          ),
+                        ExpansionTile(
+                          key: const PageStorageKey('kids-manual-connection'),
+                          tilePadding: EdgeInsets.zero,
+                          title: const Text('扫码或手动输入'),
+                          children: [
+                            TextField(
+                              key: const PageStorageKey('kids-server-address'),
+                              controller: address,
+                              keyboardType: TextInputType.url,
+                              autocorrect: false,
+                              style: const TextStyle(
                                 color: Colors.white,
+                                fontSize: 14,
                               ),
-                            ),
-                          ),
-                        ],
-                      ),
-                      const SizedBox(height: 8),
-                      const Text(
-                        '请家长帮忙填写地址，设备需接入家庭网络。',
-                        style: TextStyle(
-                          color: Colors.white54,
-                          fontSize: 12,
-                          height: 1.6,
-                        ),
-                      ),
-                      const SizedBox(height: 20),
-                      TextField(
-                        controller: address,
-                        keyboardType: TextInputType.url,
-                        autocorrect: false,
-                        style: const TextStyle(
-                          color: Colors.white,
-                          fontSize: 14,
-                        ),
-                        decoration: InputDecoration(
-                          labelText: '家庭服务器地址',
-                          hintText: 'http://电脑IP:8765',
-                          labelStyle: const TextStyle(color: Colors.white54),
-                          filled: true,
-                          fillColor: Colors.black26,
-                          contentPadding: const EdgeInsets.all(16),
-                          suffixIcon: IconButton(
-                            tooltip: '扫码连接',
-                            icon: const Icon(
-                              Icons.qr_code_scanner_rounded,
-                              color: Colors.white70,
-                            ),
-                            onPressed: busy
-                                ? null
-                                : () async {
-                                    final addr = await scanServerAddress(
-                                      context,
-                                    );
-                                    if (addr == null || !context.mounted) {
-                                      return;
-                                    }
-                                    address.text = addr;
-                                    onConnect();
-                                  },
-                          ),
-                          border: OutlineInputBorder(
-                            borderRadius: BorderRadius.circular(12),
-                            borderSide: const BorderSide(color: Colors.white12),
-                          ),
-                          enabledBorder: OutlineInputBorder(
-                            borderRadius: BorderRadius.circular(12),
-                            borderSide: const BorderSide(color: Colors.white12),
-                          ),
-                        ),
-                      ),
-                      if (error != null)
-                        Padding(
-                          padding: const EdgeInsets.only(top: 14),
-                          child: Row(
-                            crossAxisAlignment: CrossAxisAlignment.start,
-                            children: [
-                              const Icon(
-                                Icons.info_outline,
-                                size: 16,
-                                color: accent,
-                              ),
-                              const SizedBox(width: 7),
-                              Expanded(
-                                child: Text(
-                                  error!,
-                                  style: const TextStyle(
-                                    color: Color(0xffff9eb0),
-                                    fontSize: 12,
-                                    height: 1.5,
+                              decoration: InputDecoration(
+                                labelText: '家庭服务器地址',
+                                hintText: 'http://电脑IP:8765',
+                                labelStyle: const TextStyle(
+                                  color: Colors.white54,
+                                ),
+                                filled: true,
+                                fillColor: Colors.black26,
+                                contentPadding: const EdgeInsets.all(16),
+                                suffixIcon: IconButton(
+                                  tooltip: '扫码连接',
+                                  icon: const Icon(
+                                    Icons.qr_code_scanner_rounded,
+                                    color: Colors.white70,
+                                  ),
+                                  onPressed:
+                                      busy
+                                          ? null
+                                          : () async {
+                                            final addr =
+                                                await scanServerAddress(
+                                                  context,
+                                                );
+                                            if (addr == null ||
+                                                !context.mounted) {
+                                              return;
+                                            }
+                                            address.text = addr;
+                                            onConnect();
+                                          },
+                                ),
+                                border: OutlineInputBorder(
+                                  borderRadius: BorderRadius.circular(12),
+                                  borderSide: const BorderSide(
+                                    color: Colors.white12,
+                                  ),
+                                ),
+                                enabledBorder: OutlineInputBorder(
+                                  borderRadius: BorderRadius.circular(12),
+                                  borderSide: const BorderSide(
+                                    color: Colors.white12,
                                   ),
                                 ),
                               ),
-                            ],
-                          ),
-                        ),
-                      const SizedBox(height: 20),
-                      FilledButton(
-                        onPressed: busy ? null : onConnect,
-                        style: FilledButton.styleFrom(
-                          backgroundColor: accent,
-                          foregroundColor: Colors.white,
-                          minimumSize: const Size(0, 50),
-                          shape: RoundedRectangleBorder(
-                            borderRadius: BorderRadius.circular(13),
-                          ),
-                        ),
-                        child: Row(
-                          mainAxisAlignment: MainAxisAlignment.center,
-                          children: [
-                            if (busy) ...[
-                              const SizedBox(
-                                width: 16,
-                                height: 16,
-                                child: CircularProgressIndicator(
-                                  strokeWidth: 2,
-                                  color: Colors.white70,
+                            ),
+                            const SizedBox(height: 20),
+                            FilledButton(
+                              onPressed: busy ? null : onConnect,
+                              style: FilledButton.styleFrom(
+                                backgroundColor: accent,
+                                foregroundColor: Colors.white,
+                                minimumSize: const Size(0, 50),
+                                shape: RoundedRectangleBorder(
+                                  borderRadius: BorderRadius.circular(13),
                                 ),
                               ),
-                              const SizedBox(width: 10),
-                            ],
-                            Text(busy ? '连接中…' : '进入放映室'),
+                              child: Row(
+                                mainAxisAlignment: MainAxisAlignment.center,
+                                children: [
+                                  if (busy) ...[
+                                    const SizedBox(
+                                      width: 16,
+                                      height: 16,
+                                      child: CircularProgressIndicator(
+                                        strokeWidth: 2,
+                                        color: Colors.white70,
+                                      ),
+                                    ),
+                                    const SizedBox(width: 10),
+                                  ],
+                                  Text(busy ? '连接中…' : '进入放映室'),
+                                ],
+                              ),
+                            ),
                           ],
                         ),
-                      ),
-                    ],
+                      ],
+                    ),
                   ),
                 ),
                 const SizedBox(height: 24),
@@ -375,10 +405,11 @@ class KidsMediaTile extends StatelessWidget {
                     CachedThumbnail(
                       url(video['thumbnail_url']),
                       fit: BoxFit.cover,
-                      errorBuilder: (_, _, _) => const Icon(
-                        Icons.movie_outlined,
-                        color: Colors.white24,
-                      ),
+                      errorBuilder:
+                          (_, _, _) => const Icon(
+                            Icons.movie_outlined,
+                            color: Colors.white24,
+                          ),
                     ),
                   if (seconds > 0)
                     Positioned(
@@ -424,17 +455,22 @@ class KidsMediaTile extends StatelessWidget {
               ),
             ),
           ),
-          trailing: onDelete == null
-              ? const Icon(Icons.chevron_right, size: 19, color: Colors.white24)
-              : IconButton(
-                  tooltip: '删除缓存',
-                  onPressed: onDelete,
-                  icon: const Icon(
-                    Icons.delete_outline,
-                    color: Colors.white38,
-                    size: 21,
+          trailing:
+              onDelete == null
+                  ? const Icon(
+                    Icons.chevron_right,
+                    size: 19,
+                    color: Colors.white24,
+                  )
+                  : IconButton(
+                    tooltip: '删除缓存',
+                    onPressed: onDelete,
+                    icon: const Icon(
+                      Icons.delete_outline,
+                      color: Colors.white38,
+                      size: 21,
+                    ),
                   ),
-                ),
           onTap: onPlay,
         ),
       ),
@@ -581,13 +617,14 @@ class _KidsSearchSheetState extends State<KidsSearchSheet> {
 
   @override
   Widget build(BuildContext context) {
-    final matches = widget.videos
-        .where(
-          (v) => '${v['title']}'.toLowerCase().contains(
-            query.text.trim().toLowerCase(),
-          ),
-        )
-        .toList();
+    final matches =
+        widget.videos
+            .where(
+              (v) => '${v['title']}'.toLowerCase().contains(
+                query.text.trim().toLowerCase(),
+              ),
+            )
+            .toList();
     return SafeArea(
       top: false,
       child: Padding(
@@ -638,46 +675,49 @@ class _KidsSearchSheetState extends State<KidsSearchSheet> {
               ),
               const SizedBox(height: 12),
               Expanded(
-                child: matches.isEmpty
-                    ? const SingleChildScrollView(
-                        child: KidsEmptyState(
-                          icon: Icons.search_off,
-                          title: '没有找到相关视频',
-                          message: '换个关键词试试看。',
+                child:
+                    matches.isEmpty
+                        ? const SingleChildScrollView(
+                          child: KidsEmptyState(
+                            icon: Icons.search_off,
+                            title: '没有找到相关视频',
+                            message: '换个关键词试试看。',
+                          ),
+                        )
+                        : ListView(
+                          children:
+                              matches
+                                  .map(
+                                    (v) => ListTile(
+                                      leading: Icon(
+                                        v['local_path'] != null
+                                            ? Icons.offline_pin_outlined
+                                            : Icons.play_circle_outline,
+                                        color: Colors.white38,
+                                      ),
+                                      title: Text(
+                                        '${v['title']}',
+                                        maxLines: 2,
+                                        overflow: TextOverflow.ellipsis,
+                                      ),
+                                      subtitle: Text(
+                                        v['local_path'] != null
+                                            ? '已缓存 · 离线可看'
+                                            : '家长精选',
+                                        style: const TextStyle(
+                                          fontSize: 11,
+                                          color: Colors.white38,
+                                        ),
+                                      ),
+                                      onTap:
+                                          () => Navigator.pop(
+                                            context,
+                                            Map<String, dynamic>.from(v),
+                                          ),
+                                    ),
+                                  )
+                                  .toList(),
                         ),
-                      )
-                    : ListView(
-                        children: matches
-                            .map(
-                              (v) => ListTile(
-                                leading: Icon(
-                                  v['local_path'] != null
-                                      ? Icons.offline_pin_outlined
-                                      : Icons.play_circle_outline,
-                                  color: Colors.white38,
-                                ),
-                                title: Text(
-                                  '${v['title']}',
-                                  maxLines: 2,
-                                  overflow: TextOverflow.ellipsis,
-                                ),
-                                subtitle: Text(
-                                  v['local_path'] != null
-                                      ? '已缓存 · 离线可看'
-                                      : '家长精选',
-                                  style: const TextStyle(
-                                    fontSize: 11,
-                                    color: Colors.white38,
-                                  ),
-                                ),
-                                onTap: () => Navigator.pop(
-                                  context,
-                                  Map<String, dynamic>.from(v),
-                                ),
-                              ),
-                            )
-                            .toList(),
-                      ),
               ),
             ],
           ),

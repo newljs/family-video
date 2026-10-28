@@ -13,6 +13,17 @@ func seedLibrary(t *testing.T, a *App, id, title, description string) {
 	); err != nil {
 		t.Fatal(err)
 	}
+	tx, err := a.DB.Begin()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tx.Rollback()
+	if err = indexVideo(tx, id, title, description); err != nil {
+		t.Fatal(err)
+	}
+	if err = tx.Commit(); err != nil {
+		t.Fatal(err)
+	}
 }
 
 func TestLibraryClassifyAndMeta(t *testing.T) {

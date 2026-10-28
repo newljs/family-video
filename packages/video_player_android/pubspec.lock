@@ -468,10 +468,10 @@ packages:
     dependency: "direct main"
     description:
       name: video_player_platform_interface
-      sha256: "92c0fbabe20c788e71fd10d26cea998d0d253282e65d145aed0818731cf593ce"
+      sha256: "57c5d73173f76d801129d0531c2774052c5a7c11ccb962f1830630decd9f24ec"
       url: "https://pub.flutter-io.cn"
     source: hosted
-    version: "6.9.0"
+    version: "6.6.0"
   vm_service:
     dependency: transitive
     description:
@@ -521,5 +521,5 @@ packages:
     source: hosted
     version: "3.1.4"
 sdks:
-  dart: ">=3.12.0 <4.0.0"
-  flutter: ">=3.44.0"
+  dart: ">=3.11.0 <4.0.0"
+  flutter: ">=3.29.0"

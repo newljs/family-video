@@ -112,7 +112,7 @@ func (a *App) present(v map[string]any, role string) map[string]any {
 func (a *App) Handler() http.Handler {
 	mux := http.NewServeMux()
 	a.route(mux, "GET /health", "public", func(w http.ResponseWriter, r *http.Request, _ string) error {
-		reply(w, 200, map[string]string{"status": "ok", "version": "0.7.0", "backend": "go", "access_mode": "open_lan", "content_mode": "direct", "library_mode": "managed", "streaming_mode": "hls"})
+		reply(w, 200, map[string]string{"status": "ok", "version": serverVersion, "backend": "go", "access_mode": "open_lan", "content_mode": "direct", "library_mode": "managed", "streaming_mode": "hls", "watch_protocol": "events_v1"})
 		return nil
 	})
 	a.route(mux, "GET /api/me", "child", func(w http.ResponseWriter, r *http.Request, role string) error {
@@ -130,6 +130,9 @@ func (a *App) Handler() http.Handler {
 	a.route(mux, "POST /api/imports", "admin", a.importLink)
 	a.route(mux, "POST /api/uploads", "admin", a.upload)
 	a.route(mux, "GET /api/tasks", "admin", func(w http.ResponseWriter, r *http.Request, _ string) error {
+		if r.URL.Query().Has("limit") {
+			return a.taskPage(w, r)
+		}
 		items, err := query(a.DB, "SELECT id,title,kind,state,phase,downloaded_bytes,total_bytes,error,error_code,video_id,attempts,auto_retries,next_attempt_at FROM tasks ORDER BY created_at DESC,rowid DESC LIMIT 200")
 		if err == nil {
 			reply(w, 200, items)
@@ -142,6 +145,9 @@ func (a *App) Handler() http.Handler {
 	a.route(mux, "GET /api/settings/time-limit", "child", a.timeLimit)
 	a.route(mux, "PUT /api/settings/time-limit", "admin", a.saveTimeLimit)
 	a.route(mux, "GET /api/videos", "child", func(w http.ResponseWriter, r *http.Request, role string) error {
+		if r.URL.Query().Has("limit") {
+			return a.videoPage(w, r, role)
+		}
 		// 安静模式：当日额度用完后不做提示，儿童角色的目录静默收缩为
 		// 家长指定的合集；未指定合集时全部隐藏。
 		quiet, quietID := false, ""
@@ -396,13 +402,29 @@ func (a *App) editVideo(w http.ResponseWriter, r *http.Request, _ string) error 
 	if b.Description != nil && len([]rune(*b.Description)) > 4000 {
 		return fail(400, "描述不能超过 4000 字")
 	}
-	result, err := a.DB.Exec("UPDATE videos SET title=?,description=COALESCE(?,description),published=1 WHERE id=?", b.Title, b.Description, r.PathValue("id"))
+	tx, err := a.DB.BeginTx(r.Context(), nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	id := r.PathValue("id")
+	result, err := tx.Exec("UPDATE videos SET title=?,description=COALESCE(?,description),published=1 WHERE id=?", b.Title, b.Description, id)
 	if err != nil {
 		return err
 	}
 	n, _ := result.RowsAffected()
 	if n == 0 {
 		return fail(404, "视频不存在")
+	}
+	var description string
+	if err = tx.QueryRow("SELECT description FROM videos WHERE id=?", id).Scan(&description); err != nil {
+		return err
+	}
+	if err = indexVideo(tx, id, b.Title, description); err != nil {
+		return err
+	}
+	if err = tx.Commit(); err != nil {
+		return err
 	}
 	reply(w, 200, map[string]bool{"ok": true})
 	return nil

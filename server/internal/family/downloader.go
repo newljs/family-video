@@ -2,6 +2,7 @@ package family
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"os"
 	"path/filepath"
@@ -58,7 +59,20 @@ func (a *App) download(ctx context.Context, source, folder string) (string, erro
 		if err != nil {
 			return "", err
 		}
-		writeMetadata(folder, videoMetadata{Title: video.Title, Description: video.Title})
+		if video.ID != "" {
+			if len(video.ID) > 128 || !safeVideoID.MatchString(video.ID) {
+				return "", derror("invalid_source", "下载器返回的作品标识无效", false)
+			}
+			var existing string
+			err = a.DB.QueryRow("SELECT video_id FROM video_sources WHERE platform='douyin' AND source_id=?", video.ID).Scan(&existing)
+			if err == nil {
+				return "", &duplicateVideo{VideoID: existing}
+			}
+			if !errors.Is(err, sql.ErrNoRows) {
+				return "", err
+			}
+		}
+		writeMetadata(folder, videoMetadata{Title: video.Title, Description: video.Title, SourceID: video.ID})
 		var retryable bool
 		for _, candidate := range video.URLs {
 			target := filepath.Join(folder, "source.mp4")

@@ -1,0 +1,21 @@
+Third-party notices for Family Video TV
+
+AndroidX Media3 1.5.1 and AndroidX libraries
+Copyright The Android Open Source Project
+https://github.com/androidx/media
+https://android.googlesource.com/platform/frameworks/support/
+Licensed under the Apache License, Version 2.0 (see LICENSE-2.0.txt).
+
+Kotlin standard library 2.1.0 and JetBrains annotations
+Copyright JetBrains s.r.o. and Kotlin Programming Language contributors
+https://github.com/JetBrains/kotlin
+Licensed under the Apache License, Version 2.0 (see LICENSE-2.0.txt).
+
+Guava 33.3.1-android / failureaccess 1.0.2
+Copyright The Guava Authors
+https://github.com/google/guava
+Licensed under the Apache License, Version 2.0 (see LICENSE-2.0.txt).
+
+This application uses the original, unmodified upstream runtime libraries.
+Its launcher graphics and application code are original to this repository.
+Test libraries are not included in the APK.

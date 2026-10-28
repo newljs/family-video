@@ -4,33 +4,61 @@
 
 Go 单进程提供 HTTP、SQLite 任务队列、下载调度、FFmpeg 处理和媒体服务。F2 SDK 在独立 Python 环境中负责抖音作品解析；主服务不需要 FastAPI、Uvicorn 或 Python worker。
 
+家长端收集箱首页提供「查看待同步收集箱」和「查看导入任务列表」入口：待同步列表每次显示 20 条，上拉继续加载，底部始终保留同步全部待同步内容的按钮；任务列表每页 20 条，顶部固定全部/处理中/失败/已完成筛选。视频库每页 24 条，上拉加载更多，搜索和排序覆盖全库，支持下拉刷新和加载失败重试。服务端与家长端需一同重新构建以使用服务端分页；旧接口数组响应仍兼容。细节见 [家长端列表分页](docs/parent-pagination.md)。
+
+## Android TV 轻量版（v0.1）
+
+新增独立原生客户端 `apps/tv_app`，最低 Android 5.0 / API 21，包名 `cn.familyvideo.tv_app`，可与现有儿童端同时安装。打开搜索家庭电脑后直接全屏播放，上下切换、确认暂停、左键选合集，播完自动下一条并循环。仅一个播放器，不预加载下一条；地址、目录、观看事件和视频缓冲只留在内存，不建立磁盘媒体缓存或保存本地历史。家长设置的每日额度与安静合集继续生效。
+
+运行 `scripts/build-tv.ps1` 生成压缩的体验 APK `bin/family-video-tv-trial.apk`；正式签名使用 `-Mode release`，发布到管理台增加 `-Publish`。新服务的安装包列表支持 `tv`，播放仍兼容原有 v0.9.2 接口。当前直接播放已有 MP4，未增加 720p 转码；老小米电视的安装、声音、解码与待机行为尚需真机验收。操作、零持久化边界及构建见 [TV 使用说明](apps/tv_app/README.md)，验证见 [TV v0.1](docs/verification-tv-v0.1.md)。
+
 ## 启动与升级
 
-当前服务为 v0.7.0，家长 APK 为 0.7.0+9，儿童 APK 为 0.8.1+12。先在旧服务终端按 Ctrl+C 停止旧进程，再启动：
+当前服务端源码为 v0.9.2，家长 APK 为 0.9.2+12，儿童 APK 为 0.9.2+15。构建产物需重新构建并显式发布；本轮已生成的版本化服务程序为 `bin/family-video-v0.9.2.exe`。先在旧服务终端按 Ctrl+C 停止旧进程，再启动：
 
 ```powershell
 cd D:\demo\AI\family-video
-.\bin\family-video.exe
+.\bin\family-video-v0.9.2.exe
 ```
 
-默认监听 `http://0.0.0.0:8765`。健康检查 `http://127.0.0.1:8765/health` 应返回 `backend: go`、`version: 0.7.0`、`access_mode: open_lan`、`content_mode: direct`、`library_mode: managed`。
+默认监听 `http://0.0.0.0:8765`。健康检查 `http://127.0.0.1:8765/health` 应返回 `backend: go`、`version: 0.9.2`、`access_mode: open_lan`、`content_mode: direct`、`library_mode: managed`。
 
-两端只填 `http://电脑局域网IP:8765`，无需密钥、配对码或设备注册。v0.7 客户端要求同步更新服务端，以支持视频删除、描述和 HLS；访问模式仍为免认证局域网直连。
+首次使用两端会自动搜索同一局域网的家庭电脑，点选即可连接，无需填写 IP 地址、密钥或配对码。自动发现需要服务端同步升级至 v0.9.2；仍可展开“扫码或手动输入”，连接 `http://电脑局域网IP:8765`。访问模式保持免认证局域网直连。
 
-已有数据目录可以沿用。从 schema v1/v2 首次升级时，在 `runtime/database/before-v3-*.sqlite3` 自动保存数据库快照，再事务升级到 v3；原有视频全部直接可看。备份失败则停止升级。程序先监听端口，再迁移数据库，避免旧服务仍占用端口时修改数据。
+已有数据目录可以沿用。当前 schema 为 v6。v1/v2 升级保留 `runtime/database/before-v3-*.sqlite3` 快照，v3–v5 升级生成 `before-v6-*.sqlite3`；迁移在事务中建立观看事件与资源索引，原有视频全部直接可看。备份失败则停止升级。程序先监听端口，再迁移数据库，避免旧服务仍占用端口时修改数据。
 
 Ctrl+C 停止服务，执行中任务下次启动恢复。`-worker=false` 可仅启动 HTTP 供诊断。历史 Python 实现在 `legacy/python-server`，不参与当前服务。
 
+## v0.9.2 局域网自动发现
+
+首次启动未配置地址时，Android 两端自动搜索约 4 秒，列出通过 HTTP 健康检查的电脑名称和地址，由用户选择连接；多台电脑不会自动误选。搜索结束可重试，扫码和手动输入始终保留。已有地址时继续走缓存优先启动，不增加每次开机扫描等待。
+
+发现使用 IPv4 局域网广播 UDP `8766`，HTTP 默认 TCP `8765`（自定义 HTTP 端口也可发现）。电脑防火墙需允许这两个端口的家庭局域网访问；访客网络、AP 隔离、跨子网或仅 IPv6 网络可能无法发现，此时可使用扫码/手动入口。服务只绑定回环地址时不提供发现；UDP 端口占用只关闭发现，不影响 HTTP。真机 Wi-Fi 与路由器行为尚未验收，协议、测试和升级说明见 [v0.9.2 验证](docs/verification-v0.9.2.md)。
+
+## v0.9.1 快速进入与后台同步
+
+两端已有服务器地址时，打开先恢复本机保存的目录和上次页签，后台并行同步视频、合集等信息；同步不会锁住整个页面。儿童端先恢复观看额度，并恢复上次视频和播放进度。服务器慢或离线时保留缓存页面，显示轻量状态并在前台退避重试，恢复前台时立即同步。
+
+首次升级需成功同步一次才能建立目录快照。缓存目录不等于完整离线视频：网络视频在拿到新目录和签名之前只展示封面/标题；完整离线下载可直接观看。后台更新和媒体签名轮换不会重建正在使用的播放器。实现、请求超时和验证边界见 [v0.9.1 启动验证](docs/verification-v0.9.1.md)。
+## v0.9 可靠性与日常维护
+
+- 家长端接收 Android 系统文字分享，先落入本机收集箱；系统分享在已连接时提交，离线失败后在重新连接/回到前台重试，显示等待连接状态。手动收集仍可手动同步。
+- worker 按 F2 作品 ID 去重，不同分享链接可关联已有视频；旧视频缺少身份记录时仍按原分享链接去重。
+- 资源库筛选、排序、分页在 SQLite 执行；分类和标签在导入/编辑/迁移事务内维护。
+- worker 空闲时每天生成数据库快照与媒体清单；完整备份、校验、恢复到新目录及孤儿文件隔离使用 CLI。
+- 更新接口只提供通过校验的已发布 APK；正式构建从环境变量读取签名，缺失时明确失败。
+
+升级快照、签名、APK 发布和备份恢复命令见 [v0.9 运维说明](docs/operations-v0.9.md)。
 ## 网页管理台
 
 浏览器打开 `http://电脑局域网IP:8765/`（自动跳转 `/admin`），无需安装家长端即可管理：概览（磁盘剩余、各数据目录占用、ffmpeg/下载器/登录配置状态）、抖音分享导入与本地视频上传、任务进度与重试/取消、资源管理（已导入视频的搜索/预览/编辑/下载/删除，含文件大小与 HLS 状态）、合集管理、客户端 APK 安装包下载、抖音 Cookie 配置与解析验证。经 svc 统一入口时访问 `http://127.0.0.1:7777/family-video/admin`。
 
 - 新增接口：`GET /api/system`、`GET|PUT /api/config/douyin`、`POST /api/config/douyin/test`、`GET /api/apps`、`GET /api/apps/{app}/download`；`GET /api/videos` 返回每个视频的 `size_bytes`，`/media/{id}/video` 加 `dl=1` 参数时以附件形式下载（文件名取视频标题）。
-- APK 下载扫描 `apps/<应用>/build/app/outputs/flutter-apk/`（优先 app-release.apk），版本号读自各应用 pubspec.yaml；未构建时页面如实标注并提示构建方式。
+- APK 下载只读取已发布清单与哈希命名的文件；版本从 APK 本身提取，按大小和 SHA-256 校验，未发布或损坏时不可下载。运行 `scripts/build-android.ps1 -Publish` 构建并发布，正式包加 `-Mode release`。详见 [v0.9 运维说明](docs/operations-v0.9.md)。
 - 页面为零依赖单文件，`//go:embed` 内嵌于 `internal/family/admin.html`，随服务单二进制分发。
-- 资源管理支持**分类筛选**（服务端按标题/描述关键词把内容归纳为英语启蒙、语文古诗、数学思维、历史人文、科普百科、动画故事、儿歌音乐、生活习惯、家庭教育等，见 `internal/family/library.go`）、**话题标签筛选**（从 #标签 文本即时提取计数，取最高频 24 个）与**分页浏览**（每页 60 条，服务端搜索与排序）；批量操作按页选择。
+- 资源管理支持**分类筛选**（服务端按标题/描述关键词把内容归纳为英语启蒙、语文古诗、数学思维、历史人文、科普百科、动画故事、儿歌音乐、生活习惯、家庭教育等，见 `internal/family/library.go`）、**话题标签筛选**（导入/编辑时提取并保存索引，接口最多返回最高频 120 个）与**分页浏览**（每页 60 条，服务端搜索与排序）；批量操作按页选择。
 - 相关接口：`GET /api/library`（offset/limit/search/category/tag/sort）、`GET /api/library/meta`（分类与标签计数）。
-- **手机连接二维码**：概览页展示本机局域网地址（`GET /api/server-addresses` 枚举非回环 IPv4，多网卡可切换），生成「App 服务器地址」与「手机版管理台」两个二维码（`GET /qrcode?text=` 服务端渲染 PNG，仅允许 http/https）；安装包页每个已构建的 APK 附「扫码直接下载」二维码。手机与电脑同网扫码即可连接或安装。
+- **手机连接二维码**：概览页展示本机局域网地址（`GET /api/server-addresses` 枚举非回环 IPv4，多网卡可切换），生成「App 服务器地址」与「手机版管理台」两个二维码（`GET /qrcode?text=` 服务端渲染 PNG，仅允许 http/https）；安装包页每个已发布的 APK 附「扫码直接下载」二维码。手机与电脑同网扫码即可连接或安装。
 - 管理台继承服务的免认证局域网开放模式，请仅在可信家庭网络中使用。
 - macOS 上以 LaunchAgent + svc 托管运行（见 `tools/svc/svc.yaml`），FFmpeg 与 F2 下载器环境由 svc 注入的 `PATH`/`FAMILY_*` 环境变量提供；macOS 安装下载器用 `server/downloader-requirements.macos.lock`（原锁中的 pywin32/wmi/shadowcopy 为 Windows 专用）。
 
@@ -38,14 +66,14 @@ Ctrl+C 停止服务，执行中任务下次启动恢复。`-worker=false` 可仅
 
 儿童端显示名称为“抖音儿童版”，桌面、自适应图标、TV 入口与连接页采用抖音应用条目的原始图标；资源来源见 apps/kids_app/assets/branding/README.md。包名 cn.familyvideo.kids_app 保持不变，可覆盖升级并沿用缓存、喜欢与进度。家长端名称保持原有设置。
 
-**应用内更新**：两端连接服务端后自动调用 `GET /api/update/{app}`（家长 parent / 儿童 kids）比对版本号，服务端存在更新版本（以各应用 pubspec.yaml 版本 + 已构建 APK 为准）时弹窗提示，经系统浏览器下载最新 APK 安装；检查失败静默跳过，不影响使用。旧版本服务端无此接口时同样静默。
+**应用内更新**：两端连接服务端后自动调用 `GET /api/update/{app}`（家长 parent / 儿童 kids）比对版本号，服务端存在更新版本（以已发布 APK 的真实版本与构建号为准）时弹窗提示，经系统浏览器下载最新 APK 安装；检查失败静默跳过，不影响使用。旧版本服务端无此接口时同样静默。
 
 **扫码连接**：两端连接页地址输入框带扫码按钮，扫描管理台「手机连接」面板的服务器地址二维码后自动填入并连接；识别 http/https 链接（取 scheme://host:port），非地址二维码忽略继续扫，相机不可用时显示提示并回退手输（`mobile_scanner`，Android 需相机权限）。
 
 - 家长：链接收集、点击粘贴、重复提示、本地上传、任务筛选/取消/重试、下载字节和处理阶段；视频标题/描述搜索、预览、编辑信息和确认删除；合集创建、成员编辑、排序、重命名及删除。视频库按显示宽度虚拟化渲染并降采样解码缩略图，支持按播放/完播/观看时长排序与多选批量删除、批量加入合集；合集创建使用可搜索视频选择器。
 - 儿童：黑底全屏推荐流、上下滑动、点击暂停、双击喜欢、喜欢/缓存/合集操作，以及合集、离线、喜欢、个人页。横竖视频按比例居中，标题和播放进度位于底部。播放增强：**长按屏幕 2 倍速**（松开恢复），**左右拖动快进/快退**（居中显示目标时间预览，一屏宽最多两分钟，松手定位；与上下滑切换、双击喜欢、底部进度条拖动互不影响）。**内容刷完后**在第一条继续下拉或最后一条继续上拉，自动拉取服务器最新视频（新内容按推荐顺序追加，当前视频保持播放位置；单次拖动只触发一次，失败时顶部横幅提示且播放不中断）。
 
-**推荐排序与观看统计**：儿童端推荐流分桶排序——完全没播过的最上面（桶内随机、每次启动重新洗牌），播过未完播的居中，已完播的最后；观看过程中按采样累计每个视频的观看时长、播放次数与完播情况，每 30 秒批量上报服务端（`watch_stats` 表，数据库 schema v4），失败保留重试、不阻塞播放。该数据同时驱动排序与家长分析。
+**推荐排序与观看统计**：儿童端推荐流分桶排序——完全没播过的最上面（桶内随机、每次启动重新洗牌），播过未完播的居中，已完播的最后；观看过程按真实经过的时间采样，快进、暂停和缓冲不计时，倍速不额外扣额度。待上报队列每约 500ms 保存，每 30 秒按最多 50 条分批上报；事件 ID 在服务端去重，重启重试沿用原 ID，跨日补报按观看日期累计（数据库 schema v6）。该数据同时驱动排序与家长分析。
 
 **每日观看时长**：家长端「连接设置 → 儿童观看时长」设定孩子每天可观看的总时长（0 表示不限制，滑动条 5–240 分钟），并可指定一个合集作为「额度用完后可看」的内容，经 `PUT /api/settings/time-limit` 保存；儿童端经 `GET /api/settings/time-limit` 读取限额与今日已看。时长以服务端按天累计的真实观看为准（`watch_days` 表，数据库 schema v5，超过一个月的旧日期自动清理），同一天多台设备共享额度。播放页顶部在额度充足时显示剩余时间小角标（最后 5 分钟变为红色）。
 
@@ -128,9 +156,19 @@ go -C server test ./...
 go -C server vet ./...
 ```
 
-两端应用及共享 API 包分别执行 `flutter analyze` 和 `flutter test`。测试加 `--update-goldens --dart-define=CAPTURE_UI=true` 可生成 runtime/ui 截图；截图用测试视频背景。
+统一执行 `scripts/check.ps1`；加 `-NativeAndroid` 可构建双端 debug APK 并运行原生播放器测试。GitHub Actions 固定 Go 1.26.0 / Flutter 3.44.6 / JDK 17。测试加 `--update-goldens --dart-define=CAPTURE_UI=true` 可生成 runtime/ui 截图；截图用测试视频背景。
 
-v0.9 变更的服务端部分（`/api/update`、APK 下载公开化）已通过 Go 测试并在 macOS 服务端部署验证；**Flutter 端改动已在 macOS 本机构建环境完成全量验证**：`flutter analyze` 双端 0 问题、`flutter test` 全过（儿童 18 / 家长 8）、两端 APK 成功打包并经管理台下载与自动更新链路验证。真机上的长按倍速与拖动快进表现仍待验收。本轮缩略图磁盘缓存（family_api 新增 `path_provider`，两端调用点与 pubspec.lock 需重新 `flutter pub get`）与上述改动同属未在 Flutter 3.44 环境验证的范围。重编码硬件加速在无 ffmpeg 的开发机上仅通过单元测试（桩探测器、编造编码器名的回退路径）验证，真实 GPU 编码的可用性与画质待部署机验收；部署机若无可用的硬件编码器，服务自动保持 libx264 行为。
+电视端模拟器冒烟统一走 `scripts/tv-emulator.ps1`，不要在仓库内直接建 AVD：
+
+```powershell
+.\scripts\tv-emulator.ps1                # 启动测试设备（不存在时自动创建）
+.\scripts\tv-emulator.ps1 -Action create # 只创建，不启动
+.\scripts\tv-emulator.ps1 -Action delete # 删除设备并回收占用
+```
+
+脚本把 `ANDROID_AVD_HOME` 固定在仓库外（默认 SDK 同级的 `avd-home`，可用 `-AvdHome` 或 `FAMILY_AVD_HOME` 覆盖，指进仓库会直接报错），并在创建后把 android-21 镜像默认的 `disk.dataPartition.size=10G` 压到 2048M。QEMU 会按分区整块预分配：此前一个建在 `runtime/` 下的设备实占 14 GB，改到仓库外并压小分区后运行期约 5.3 GB。启动带 `-no-snapshot-load -no-snapshot-save`，不再额外落 2 GB 的 `snapshots/*/ram.img`。
+
+v0.9 本轮验证记录见 [verification-v0.9.md](docs/verification-v0.9.md)。真机系统分享、原签名覆盖升级、电视焦点、待机与长时间播放仍需设备验收。历史版本验证保留在对应版本文档中。
 
 ### macOS 本机构建（Windows 不可用时）
 
@@ -149,7 +187,7 @@ cd apps/kids_app && flutter build apk --release --ignore-deprecation
 cd ../parent_app && flutter build apk --release --ignore-deprecation
 ```
 
-产物自动落入 `apps/*/build/app/outputs/flutter-apk/app-release.apk`，管理台「安装包」页与两端 App 内自动更新随之生效。Windows 构建机仍可用原 `scripts/build-android.ps1`（Flutter 3.44 无需以上适配；pubspec 的 sdk 下限两端通用）。
+产物落入 `apps/*/build/app/outputs/flutter-apk/app-release.apk`；v0.9 需按 [发布说明](docs/operations-v0.9.md) 配置原签名并显式运行 `publish-apk`，才会进入管理台与应用更新接口。Windows 构建机仍可用原 `scripts/build-android.ps1`（Flutter 3.44 无需以上适配；pubspec 的 sdk 下限两端通用）。
 
 待完成：Android 系统分享和后台同步、博主/平台合集批量导入、作品 ID 去重、整库清理、离线封面/断点续传/配额、多儿童档案、可靠观看额度、备份恢复界面、完整电视验收。当前离线上限 2GB，喜欢只在本地，二十分钟提示按当前页面计时，APK 为调试签名。
 

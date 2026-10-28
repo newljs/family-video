@@ -21,7 +21,9 @@ dependencies:
   flutter:
     sdk: flutter
   meta: ^1.10.0
-  video_player_platform_interface: ^6.9.0
+  # The local Dart facade is backported to 6.6.0; newer interfaces also export
+  # VideoTrack and conflict with video_track_compat.dart.
+  video_player_platform_interface: 6.6.0
 
 dev_dependencies:
   build_runner: ^2.3.3

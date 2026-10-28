@@ -213,11 +213,11 @@ dialog .dfoot { padding:12px 18px 16px; display:flex; gap:10px; justify-content:
 
   <!-- ============ 安装包 ============ -->
   <section id="sec-apps">
-    <h2>客户端安装包 <span class="muted" style="font-size:12px;font-weight:400">（最新构建的 APK，下载后传到手机/平板安装）</span></h2>
+    <h2>客户端安装包 <span class="muted" style="font-size:12px;font-weight:400">（已发布并通过完整性校验的 APK）</span></h2>
     <div class="grid" id="app-grid" style="grid-template-columns:repeat(auto-fill,minmax(300px,1fr))"></div>
     <div class="panel muted" style="margin-top:14px;font-size:13px">
-      安装包来自 <code>apps/&lt;应用&gt;/build/app/outputs/flutter-apk/</code>（优先 app-release.apk，其次 app-debug.apk）。
-      当前为调试签名。未构建时请在装有 Flutter 环境的机器上运行 <code>scripts/build-android.ps1</code>，构建完成后回到本页即可下载。
+      安装包版本从 APK 本身读取。运行 <code>scripts/build-android.ps1 -Publish</code> 构建并发布调试包；
+      正式包使用 <code>-Mode release -Publish</code>，需先配置签名。发布后保存在数据目录的 releases 下，修改源码版本或再次构建不会改变已发布文件。
     </div>
   </section>
 
@@ -335,7 +335,7 @@ const fmtUptime = sec => {
   return (d ? d + ' 天 ' : '') + (h ? h + ' 小时 ' : '') + m + ' 分钟';
 };
 const STATE_CN = { queued:'排队中', running:'进行中', completed:'已完成', failed:'失败', cancelled:'已取消' };
-const PHASE_CN = { queued:'排队', resolving:'解析', downloading:'下载', cached:'缓存', checking:'检查', processing:'转码', cover:'封面', streaming:'分片', waiting_retry:'等待重试', done:'完成' };
+const PHASE_CN = { queued:'排队', resolving:'解析', downloading:'下载', cached:'缓存', checking:'检查', inspecting:'检查', processing:'转码', cover:'封面', thumbnail:'封面', streaming:'分片', waiting_retry:'等待重试', retry_wait:'等待重试', completed:'完成', duplicate:'作品已在视频库中', done:'完成' };
 const badge = state => `<span class="badge b-${esc(state)}">${esc(STATE_CN[state] || state)}</span>`;
 
 /* ---------- 标签页 ---------- */
@@ -798,7 +798,7 @@ async function loadApps() {
       const when = x.updated_at ? (x.updated_at.replace('T', ' ').slice(0, 16)) + ' UTC' : '';
       const qr = x.available && serverAddr
         ? `<figure class="qr-figure" style="margin-top:10px">
-             <img class="qr-mini" src="qrcode?text=${encodeURIComponent('http://' + serverAddr + '/api/apps/' + x.app + '/download')}" alt="扫码下载">
+             <img class="qr-mini" src="qrcode?text=${encodeURIComponent('http://' + serverAddr + '/' + x.url)}" alt="扫码下载">
              <figcaption>手机扫码直接下载</figcaption>
            </figure>`
         : '';
@@ -806,8 +806,8 @@ async function loadApps() {
         <div class="body" style="padding:14px 16px">
           <div style="font-weight:650;font-size:15px">${esc(x.label)} ${ver}</div>
           <div class="meta">${x.available
-            ? `${fmtBytes(x.size_bytes)} · 构建于 ${esc(when)}`
-            : '<span class="error-text">未构建</span>'}</div>
+            ? `${fmtBytes(x.size_bytes)} · 发布于 ${esc(when)}`
+            : '<span class="error-text">未发布有效安装包</span>'}</div>
           ${x.available
             ? `<a class="act primary" style="display:block;text-align:center;text-decoration:none;margin-top:8px" href="${esc(x.url)}">下载 APK</a>${qr}`
             : `<div class="meta" style="font-size:12px">${esc(x.note || '')}</div>`}

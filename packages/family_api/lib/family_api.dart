@@ -5,6 +5,10 @@ import 'package:http/http.dart' as http;
 import 'package:shared_preferences/shared_preferences.dart';
 export 'package:family_models/family_models.dart';
 export 'thumbnail.dart';
+export 'startup_cache.dart';
+export 'background_sync.dart';
+export 'discovery.dart';
+export 'discovery_panel.dart';
 
 class FamilyApiException implements Exception {
   final String message;
@@ -53,10 +57,14 @@ String friendlyError(Object error) {
 }
 
 class FamilyApi {
-  final http.Client? _client;
+  final http.Client _client;
+  final bool _ownsClient;
   final String clientRole;
   FamilyApi({http.Client? client, this.clientRole = 'child'})
-    : _client = client;
+    : _client = client ?? http.Client(),
+      _ownsClient = client == null;
+  String? _checkedServer;
+  DateTime? _checkedAt;
   String server = '';
   // Retained only to find pre-0.4 offline files and favorites. Never transmitted.
   String token = '';
@@ -76,10 +84,22 @@ class FamilyApi {
     } catch (_) {
       token = '';
     }
+    if (server.isNotEmpty)
+      await prefs.setString('cache_identity_$server', token);
   }
 
-  Future<void> checkServer() async {
-    final health = await request('GET', '/health');
+  Future<void> checkServer({bool force = false}) async {
+    final checking = server;
+    if (!force &&
+        _checkedServer == checking &&
+        _checkedAt != null &&
+        DateTime.now().difference(_checkedAt!) < const Duration(minutes: 5))
+      return;
+    final health = await requestWithTimeout(
+      'GET',
+      '/health',
+      timeout: const Duration(seconds: 3),
+    );
     if (health is! Map ||
         health['access_mode'] != 'open_lan' ||
         health['content_mode'] != 'direct' ||
@@ -87,6 +107,10 @@ class FamilyApi {
       throw const FamilyApiException(
         '请先将家庭电脑服务端更新到 0.7 或更新版本，以支持视频管理、描述和流媒体播放。',
       );
+    }
+    if (server == checking) {
+      _checkedServer = checking;
+      _checkedAt = DateTime.now();
     }
   }
 
@@ -116,6 +140,8 @@ class FamilyApi {
     }
     await prefs.setString('server', candidate.server);
     server = candidate.server;
+    _checkedServer = candidate._checkedServer;
+    _checkedAt = candidate._checkedAt;
   }
 
   Future<void> logout() async {
@@ -150,15 +176,37 @@ class FamilyApi {
   }
 
   Future<dynamic> request(String method, String path, [Object? body]) async {
-    final request = http.Request(method, uri(path));
+    return requestWithTimeout(method, path, body: body);
+  }
+
+  Future<dynamic> requestWithTimeout(
+    String method,
+    String path, {
+    Object? body,
+    Duration timeout = const Duration(seconds: 30),
+  }) async {
+    final abort = Completer<void>();
+    final request = http.AbortableRequest(
+      method,
+      uri(path),
+      abortTrigger: abort.future,
+    );
     request.headers.addAll({...headers, 'Content-Type': 'application/json'});
     if (body != null) request.body = jsonEncode(body);
-    final response = await http.Response.fromStream(
-      await (_client == null ? request.send() : _client.send(request)).timeout(
-        const Duration(seconds: 15),
-      ),
-    ).timeout(const Duration(seconds: 30));
+    Future<http.Response> send() async =>
+        http.Response.fromStream(await _client.send(request));
+    final response = await send().timeout(
+      timeout,
+      onTimeout: () {
+        abort.complete();
+        throw TimeoutException('Request deadline exceeded', timeout);
+      },
+    );
     return decode(response);
+  }
+
+  void close() {
+    if (_ownsClient) _client.close();
   }
 
   Future<void> upload(String path, String title) async {
@@ -168,7 +216,7 @@ class FamilyApi {
     req.files.add(await http.MultipartFile.fromPath('file', path));
     decode(
       await http.Response.fromStream(
-        await req.send(),
+        await _client.send(req),
       ).timeout(const Duration(minutes: 15)),
     );
   }

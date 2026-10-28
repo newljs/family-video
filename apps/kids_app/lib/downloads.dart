@@ -21,7 +21,19 @@ class Downloads {
     final file = File('${(await folder).path}/index.json');
     if (!await file.exists()) return [];
     final entries = jsonDecode(await file.readAsString()) as List;
-    return entries.where((e) => File(e['local_path']).existsSync()).toList();
+    final result = <dynamic>[];
+    // Check files asynchronously in small batches, keeping startup IO off the UI
+    // isolate even when the device has many saved videos.
+    for (var offset = 0; offset < entries.length; offset += 32) {
+      final batch = entries.skip(offset).take(32).toList();
+      final exists = await Future.wait(
+        batch.map((e) => File(e['local_path']).exists()),
+      );
+      for (var i = 0; i < batch.length; i++) {
+        if (exists[i]) result.add(batch[i]);
+      }
+    }
+    return result;
   }
 
   Future<void> save(Map<String, dynamic> video) async {

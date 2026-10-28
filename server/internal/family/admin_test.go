@@ -49,10 +49,13 @@ func TestAppsListAndDownload(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(root, "apps", "kids_app", "pubspec.yaml"), []byte("name: kids_app\nversion: 0.8.1+12\n"), 0644); err != nil {
 		t.Fatal(err)
 	}
+	if _, err := stageAPK(a.Config, APKRelease{App: "kids", Version: "0.8.1+12", Build: 12}, filepath.Join(apkDir, "app-debug.apk")); err != nil {
+		t.Fatal(err)
+	}
 
 	apps := list(t, request(t, a, "GET", "/api/apps", "parent", nil))
-	if len(apps) != 2 {
-		t.Fatalf("want 2 apps, got %d", len(apps))
+	if len(apps) != 3 {
+		t.Fatalf("want 3 apps, got %d", len(apps))
 	}
 	byName := map[string]map[string]any{}
 	for _, app := range apps {
@@ -102,10 +105,14 @@ func TestUpdateCheck(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(root, "apps", "parent_app", "pubspec.yaml"), []byte("name: parent_app\nversion: 0.7.1+10\n"), 0644); err != nil {
 		t.Fatal(err)
 	}
+	release, err := stageAPK(a.Config, APKRelease{App: "parent", Version: "0.7.1+10", Build: 10}, filepath.Join(apkDir, "app-debug.apk"))
+	if err != nil {
+		t.Fatal(err)
+	}
 
 	// 已构建：返回版本与下载地址，儿童客户端也可访问。
 	info := object(t, request(t, a, "GET", "/api/update/parent", "child", nil))
-	if info["available"] != true || info["version"] != "0.7.1+10" || info["url"] != "api/apps/parent/download" {
+	if info["available"] != true || info["version"] != "0.7.1+10" || info["url"] != "api/apps/parent/download?sha256="+release.SHA256 {
 		t.Fatalf("update info wrong: %v", info)
 	}
 	// 未构建：available=false 而不是报错。

@@ -252,7 +252,6 @@ class AndroidVideoPlayer extends VideoPlayerPlatform {
     return true;
   }
 
-  @override
   // platform_interface 6.6.0 无此方法声明，6.7+ 的选轨能力由门面 2.10.1 不触达，保留内部实现。
   Future<List<VideoTrack>> getVideoTracks(int playerId) async {
     final NativeVideoTrackData nativeData = await _playerWith(id: playerId).getVideoTracks();
@@ -289,7 +288,6 @@ class AndroidVideoPlayer extends VideoPlayerPlatform {
     return _playerWith(id: playerId).selectVideoTrack(track);
   }
 
-  @override
   bool isVideoTrackSupportAvailable() {
     // Android with ExoPlayer supports video track selection
     return true;

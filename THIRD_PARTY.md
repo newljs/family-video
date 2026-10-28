@@ -13,3 +13,5 @@
 - 应用内更新依赖 package_info_plus（读取自身版本号）与 url_launcher（调起系统浏览器下载 APK），均为 flutter-community 维护的 BSD-3-Clause 插件，版本由两端 pubspec.yaml 固定。
 
 - 扫码连接依赖 mobile_scanner（基于 ML Kit / CameraX 的二维码扫描插件，MIT 许可），用于家长端与儿童端连接页扫描管理台「手机连接」面板的服务器地址二维码；Android 相机权限由两端 AndroidManifest 声明。
+
+- 独立 TV 客户端位于 apps/tv_app，使用 Kotlin 标准库和 AndroidX Media3 ExoPlayer/UI 1.5.1（Apache-2.0），为兼容 Android API 21 固定版本。仅使用上游播放能力，未复制解码算法，不引入 FFmpeg 原生库。测试依赖 JUnit 4.13.2、org.json 20240303、MockWebServer 4.12.0，不进入 APK。TV 图标和 banner 为本仓库原创矢量图形。

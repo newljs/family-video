@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'paged_items.dart';
 
 const parentGreen = Color(0xff087f73);
 
@@ -56,9 +57,8 @@ class PanelCard extends StatelessWidget {
   final Widget child;
   const PanelCard({super.key, required this.child});
   @override
-  Widget build(BuildContext context) => Card(
-    child: Padding(padding: const EdgeInsets.all(18), child: child),
-  );
+  Widget build(BuildContext context) =>
+      Card(child: Padding(padding: const EdgeInsets.all(18), child: child));
 }
 
 class SectionHeading extends StatelessWidget {
@@ -195,12 +195,18 @@ class Overview extends StatelessWidget {
 
 class TaskPanel extends StatefulWidget {
   final List<dynamic> tasks;
+  final bool paged;
+  final PageLoader? loadPage;
+  final int? total;
   final bool busy;
   final ValueChanged<String> onRetry, onCancel;
   final VoidCallback onLibrary;
   const TaskPanel({
     super.key,
     required this.tasks,
+    this.paged = false,
+    this.loadPage,
+    this.total,
     required this.busy,
     required this.onRetry,
     required this.onCancel,
@@ -212,6 +218,60 @@ class TaskPanel extends StatefulWidget {
 
 class _TaskPanelState extends State<TaskPanel> {
   int filter = 0;
+  late final page = PagedItems(loader: widget.loadPage);
+  final scroll = ScrollController();
+  @override
+  void initState() {
+    super.initState();
+    page.seed(widget.tasks, widget.total);
+    page.addListener(changed);
+    scroll.addListener(() {
+      if (scroll.position.extentAfter < 320 && page.error == null) page.more();
+    });
+  }
+
+  void changed() {
+    if (mounted) setState(() {});
+  }
+
+  @override
+  void didUpdateWidget(covariant TaskPanel oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.tasks != widget.tasks && widget.paged) {
+      if (widget.loadPage != null) {
+        if (filter == 0 && page.items.length <= page.pageSize) {
+          page.seed(widget.tasks, widget.total);
+        } else {
+          page.refresh();
+        }
+      } else {
+        page.seed(widget.tasks.where(matches).toList(), null);
+      }
+    }
+  }
+
+  void selectFilter(int value) {
+    setState(() => filter = value);
+    if (!widget.paged) return;
+    if (scroll.hasClients) scroll.jumpTo(0);
+    if (widget.loadPage == null) {
+      setState(() => page.seed(widget.tasks.where(matches).toList(), null));
+    } else {
+      page.refresh(
+        query: {
+          'filter': ['all', 'processing', 'failed', 'completed'][filter],
+        },
+      );
+    }
+  }
+
+  @override
+  void dispose() {
+    scroll.dispose();
+    page.dispose();
+    super.dispose();
+  }
+
   bool matches(dynamic t) => switch (filter) {
     1 => ['queued', 'running'].contains(t['state']),
     2 => t['state'] == 'failed',
@@ -220,11 +280,21 @@ class _TaskPanelState extends State<TaskPanel> {
   };
   @override
   Widget build(BuildContext context) {
-    final items = widget.tasks.where(matches).toList();
+    final items =
+        widget.paged ? page.items : widget.tasks.where(matches).toList();
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
-        const SectionHeading('导入任务', subtitle: '处理完成后，儿童端即可观看。'),
+        if (!widget.paged)
+          const SectionHeading('导入任务', subtitle: '处理完成后，儿童端即可观看。')
+        else
+          const Padding(
+            padding: EdgeInsets.only(bottom: 12),
+            child: Text(
+              '处理完成后，儿童端即可观看。',
+              style: TextStyle(color: Color(0xff718081), fontSize: 13),
+            ),
+          ),
         Wrap(
           spacing: 8,
           runSpacing: 6,
@@ -233,39 +303,75 @@ class _TaskPanelState extends State<TaskPanel> {
             (i) => ChoiceChip(
               label: Text(['全部', '处理中', '失败', '已完成'][i]),
               selected: filter == i,
-              onSelected: (_) => setState(() => filter = i),
+              onSelected: (_) => selectFilter(i),
             ),
           ),
         ),
         const SizedBox(height: 12),
-        if (items.isEmpty)
-          PanelCard(
-            child: EmptyPanel(
-              icon: Icons.downloading_outlined,
-              title: widget.tasks.isEmpty ? '还没有导入任务' : '暂无此类任务',
-              message: widget.tasks.isEmpty
-                  ? '同步收集箱或上传本地视频后，进度会显示在这里。'
-                  : '可以切换筛选查看其他任务。',
+        if (widget.paged)
+          Expanded(
+            child: RefreshIndicator(
+              onRefresh: page.refresh,
+              child: ListView.builder(
+                controller: scroll,
+                padding: const EdgeInsets.fromLTRB(0, 0, 0, 16),
+                physics: const AlwaysScrollableScrollPhysics(),
+                itemCount: items.isEmpty ? 2 : items.length + 1,
+                itemBuilder: (context, index) {
+                  if (items.isEmpty && index == 0) {
+                    return page.loading || page.error != null
+                        ? const SizedBox.shrink()
+                        : taskEmpty();
+                  }
+                  if (index >= items.length) return PageFooter(page);
+                  return Padding(
+                    padding: const EdgeInsets.only(bottom: 12),
+                    child: taskCard(items[index]),
+                  );
+                },
+              ),
+            ),
+          )
+        else ...[
+          if (items.isEmpty)
+            PanelCard(
+              child: EmptyPanel(
+                icon: Icons.downloading_outlined,
+                title: widget.tasks.isEmpty ? '还没有导入任务' : '暂无此类任务',
+                message:
+                    widget.tasks.isEmpty
+                        ? '同步收集箱或上传本地视频后，进度会显示在这里。'
+                        : '可以切换筛选查看其他任务。',
+              ),
+            ),
+          ...items.map(
+            (t) => Padding(
+              padding: const EdgeInsets.only(bottom: 12),
+              child: taskCard(t),
             ),
           ),
-        ...items.map(
-          (t) => Padding(
-            padding: const EdgeInsets.only(bottom: 12),
-            child: taskCard(t),
-          ),
-        ),
+        ],
       ],
     );
   }
 
+  Widget taskEmpty() => PanelCard(
+    child: EmptyPanel(
+      icon: Icons.downloading_outlined,
+      title: filter == 0 ? '还没有导入任务' : '暂无此类任务',
+      message: filter == 0 ? '同步收集箱或上传本地视频后，进度会显示在这里。' : '可以切换筛选查看其他任务。',
+    ),
+  );
+
   Widget taskCard(dynamic t) {
     final state = '${t['state']}';
     final failed = state == 'failed', done = state == 'completed';
-    final color = failed
-        ? const Color(0xffb3443c)
-        : done
-        ? parentGreen
-        : const Color(0xff7a8390);
+    final color =
+        failed
+            ? const Color(0xffb3443c)
+            : done
+            ? parentGreen
+            : const Color(0xff7a8390);
     final phase = '${t['phase'] ?? ''}';
     final nextRetry = (t['next_attempt_at'] as num?)?.toInt() ?? 0;
     final waiting =
@@ -273,26 +379,29 @@ class _TaskPanelState extends State<TaskPanel> {
         nextRetry > DateTime.now().millisecondsSinceEpoch ~/ 1000;
     final received = (t['downloaded_bytes'] as num?)?.toDouble() ?? 0;
     final total = (t['total_bytes'] as num?)?.toDouble() ?? 0;
-    final label = waiting
-        ? '等待自动重试'
-        : state == 'running'
-        ? const {
-                'cached': '校验已下载原件',
-                'resolving': '解析视频地址',
-                'downloading': '下载视频',
-                'inspecting': '检查视频',
-                'processing': '处理视频',
-                'thumbnail': '生成封面',
-                'streaming': '准备流媒体',
-              }[phase] ??
-              '处理中'
-        : const {
-                'queued': '排队中',
-                'completed': '已完成',
-                'failed': '导入失败',
-                'cancelled': '已取消',
-              }[state] ??
-              state;
+    final label =
+        phase == 'duplicate' && state == 'completed'
+            ? '已在视频库中，无需重复下载'
+            : waiting
+            ? '等待自动重试'
+            : state == 'running'
+            ? const {
+                  'cached': '校验已下载原件',
+                  'resolving': '解析视频地址',
+                  'downloading': '下载视频',
+                  'inspecting': '检查视频',
+                  'processing': '处理视频',
+                  'thumbnail': '生成封面',
+                  'streaming': '准备流媒体',
+                }[phase] ??
+                '处理中'
+            : const {
+                  'queued': '排队中',
+                  'completed': '已完成',
+                  'failed': '导入失败',
+                  'cancelled': '已取消',
+                }[state] ??
+                state;
     return PanelCard(
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
@@ -413,17 +522,19 @@ class _TaskPanelState extends State<TaskPanel> {
                 children: [
                   if (['queued', 'running', 'failed'].contains(state))
                     TextButton.icon(
-                      onPressed: widget.busy
-                          ? null
-                          : () => widget.onCancel('${t['id']}'),
+                      onPressed:
+                          widget.busy
+                              ? null
+                              : () => widget.onCancel('${t['id']}'),
                       icon: const Icon(Icons.close, size: 17),
                       label: const Text('取消任务'),
                     ),
                   if (failed)
                     FilledButton.tonalIcon(
-                      onPressed: widget.busy
-                          ? null
-                          : () => widget.onRetry('${t['id']}'),
+                      onPressed:
+                          widget.busy
+                              ? null
+                              : () => widget.onRetry('${t['id']}'),
                       icon: const Icon(Icons.refresh, size: 18),
                       label: const Text('重试'),
                     ),

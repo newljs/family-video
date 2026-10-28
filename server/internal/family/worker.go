@@ -14,6 +14,10 @@ import (
 	"time"
 )
 
+type duplicateVideo struct{ VideoID string }
+
+func (e *duplicateVideo) Error() string { return "作品已在视频库中" }
+
 func (a *App) StartWorker(ctx context.Context) (func(), error) {
 	lock := flock.New(filepath.Join(a.Config.Data, "worker.lock"))
 	ok, err := lock.TryLock()
@@ -31,12 +35,19 @@ func (a *App) StartWorker(ctx context.Context) (func(), error) {
 	go func() {
 		defer close(done)
 		defer lock.Unlock()
+		var lastMaintenance time.Time
 		for ctx.Err() == nil {
 			worked, e := a.RunOnce(ctx)
 			if e != nil {
 				log.Printf("worker: %v", e)
 			}
 			if !worked && e == nil && ctx.Err() == nil {
+				if time.Since(lastMaintenance) >= time.Hour {
+					lastMaintenance = time.Now()
+					if err := a.dailySnapshot(); err != nil {
+						log.Printf("database snapshot: %v", err)
+					}
+				}
 				a.mediaMu.Lock()
 				a.cleanupDeleted()
 				a.mediaMu.Unlock()
@@ -137,6 +148,16 @@ func (a *App) RunOnce(ctx context.Context) (bool, error) {
 			if err != nil {
 				return err
 			}
+			if identity := readMetadata(folder).SourceID; identity != "" {
+				var existing string
+				e := a.DB.QueryRow("SELECT video_id FROM video_sources WHERE platform='douyin' AND source_id=?", identity).Scan(&existing)
+				if e == nil {
+					return &duplicateVideo{VideoID: existing}
+				}
+				if !errors.Is(e, sql.ErrNoRows) {
+					return e
+				}
+			}
 		}
 		info, e := os.Stat(path)
 		if e != nil {
@@ -230,6 +251,14 @@ func (a *App) RunOnce(ctx context.Context) (bool, error) {
 		if _, e = save.Exec("INSERT INTO videos(id,title,description,source_url,path,duration,width,height,published,stream_state) VALUES(?,?,?,?,?,?,?,?,1,'ready')", videoID, title, metadata.Description, sourceURL, filepath.Base(target), duration, width, height); e != nil {
 			return e
 		}
+		if e = indexVideo(save, videoID, title, metadata.Description); e != nil {
+			return e
+		}
+		if identity := readMetadata(folder).SourceID; kind == "douyin" && identity != "" {
+			if _, e = save.Exec("INSERT INTO video_sources(video_id,platform,source_id) VALUES(?,'douyin',?)", videoID, identity); e != nil {
+				return e
+			}
+		}
 		result, e := save.Exec("UPDATE tasks SET state='completed',phase='completed',next_attempt_at=0,error=NULL,error_code=NULL,title=?,video_id=? WHERE id=? AND state='running'", title, videoID, id)
 		if e != nil {
 			return e
@@ -244,6 +273,20 @@ func (a *App) RunOnce(ctx context.Context) (bool, error) {
 		os.Remove(target)
 		os.Remove(cover)
 		os.RemoveAll(filepath.Join(a.Config.Data, "streams", videoID))
+		var duplicate *duplicateVideo
+		if errors.As(e, &duplicate) {
+			result, updateErr := a.DB.Exec("UPDATE tasks SET state='completed',phase='duplicate',video_id=?,error=NULL,error_code=NULL WHERE id=? AND state='running' AND EXISTS(SELECT 1 FROM videos WHERE id=?)", duplicate.VideoID, id, duplicate.VideoID)
+			if updateErr != nil {
+				return true, updateErr
+			}
+			if count, _ := result.RowsAffected(); count == 1 {
+				a.cleanupImport(id, kind)
+			} else {
+				_, updateErr = a.DB.Exec("UPDATE tasks SET state='queued',phase='queued' WHERE id=? AND state='running'", id)
+				a.cleanupImport(id, kind)
+			}
+			return true, updateErr
+		}
 		state, phase, code := "failed", "failed", "processing_failed"
 		message := e.Error()
 		var nextAttempt int64

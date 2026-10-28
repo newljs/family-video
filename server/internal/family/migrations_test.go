@@ -33,7 +33,7 @@ func TestMigrationMakesLegacyVideosVisibleAndBacksUp(t *testing.T) {
 	var version, published int
 	a.DB.QueryRow("PRAGMA user_version").Scan(&version)
 	a.DB.QueryRow("SELECT published FROM videos WHERE id='old'").Scan(&published)
-	if version != 5 || published != 1 {
+	if version != 6 || published != 1 {
 		t.Fatal(version, published)
 	}
 	backups, _ := filepath.Glob(filepath.Join(c.Data, "database", "before-v3-*.sqlite3"))
@@ -96,5 +96,44 @@ func TestMigrationFromV2PreservesManualTitlesAndSchedulesStreaming(t *testing.T)
 	app.DB.QueryRow("SELECT title_manual FROM tasks WHERE id='t'").Scan(&manual)
 	if state != "pending" || description != "" || !manual {
 		t.Fatal(state, description, manual)
+	}
+}
+
+func TestMigrationV5BuildsCatalogAndPreservesStats(t *testing.T) {
+	c, err := InitConfig(Config{Data: t.TempDir()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	db, err := sql.Open("sqlite", filepath.Join(c.Data, "database", "family.sqlite3"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = db.Exec(schema + `;INSERT INTO videos(id,title,description,path,duration,width,height) VALUES('v1','英语启蒙','#英语','v1.mp4',1,160,120);
+ INSERT INTO watch_stats(video_id,plays,watched_ms) VALUES('v1',2,30000); PRAGMA user_version=5;`); err != nil {
+		t.Fatal(err)
+	}
+	db.Close()
+	a, err := New(c)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer a.DB.Close()
+	var category string
+	if err = a.DB.QueryRow("SELECT category FROM video_catalog WHERE video_id='v1'").Scan(&category); err != nil {
+		t.Fatal(err)
+	}
+	if category != "英语启蒙" {
+		t.Fatal(category)
+	}
+	var watched int
+	if err = a.DB.QueryRow("SELECT watched_ms FROM watch_stats WHERE video_id='v1'").Scan(&watched); err != nil {
+		t.Fatal(err)
+	}
+	if watched != 30000 {
+		t.Fatal(watched)
+	}
+	snapshots, _ := filepath.Glob(filepath.Join(c.Data, "database", "before-v6-*.sqlite3"))
+	if len(snapshots) != 1 {
+		t.Fatal(snapshots)
 	}
 }

@@ -11,6 +11,7 @@ import 'package:mockito/annotations.dart';
 import 'package:mockito/mockito.dart';
 import 'package:video_player_android/src/messages.g.dart';
 import 'package:video_player_android/src/platform_view_player.dart';
+import 'package:video_player_android/src/video_track_compat.dart';
 import 'package:video_player_android/video_player_android.dart';
 import 'package:video_player_platform_interface/video_player_platform_interface.dart';
 
@@ -426,7 +427,7 @@ void main() {
       );
     });
 
-    test('createWithOptions passes backBufferDurationMs for texture view', () async {
+    test('6.6 facade leaves backBufferDurationMs unset for texture view', () async {
       final (AndroidVideoPlayer player, MockAndroidVideoPlayerApi api, _) = setUpMockPlayer(
         playerId: 1,
         textureId: 100,
@@ -439,16 +440,15 @@ void main() {
         VideoCreationOptions(
           dataSource: DataSource(sourceType: DataSourceType.network, uri: 'https://example.com'),
           viewType: VideoViewType.textureView,
-          videoPlayerOptions: VideoPlayerOptions(backBufferDurationMs: 20000),
         ),
       );
 
       final VerificationResult verification = verify(api.createForTextureView(captureAny));
       final creationOptions = verification.captured[0] as CreationOptions;
-      expect(creationOptions.backBufferDurationMs, 20000);
+      expect(creationOptions.backBufferDurationMs, isNull);
     });
 
-    test('createWithOptions passes backBufferDurationMs for platform view', () async {
+    test('6.6 facade leaves backBufferDurationMs unset for platform view', () async {
       final (AndroidVideoPlayer player, MockAndroidVideoPlayerApi api, _) = setUpMockPlayer(
         playerId: 1,
       );
@@ -458,13 +458,12 @@ void main() {
         VideoCreationOptions(
           dataSource: DataSource(sourceType: DataSourceType.network, uri: 'https://example.com'),
           viewType: VideoViewType.platformView,
-          videoPlayerOptions: VideoPlayerOptions(backBufferDurationMs: 20000),
         ),
       );
 
       final VerificationResult verification = verify(api.createForPlatformView(captureAny));
       final creationOptions = verification.captured[0] as CreationOptions;
-      expect(creationOptions.backBufferDurationMs, 20000);
+      expect(creationOptions.backBufferDurationMs, isNull);
     });
 
     test('setLooping', () async {

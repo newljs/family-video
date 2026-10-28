@@ -11,7 +11,7 @@ HTTP 和 worker 共用进程，OS 文件锁阻止第二个 worker。先监听端
 
 - `server/cmd/family-video/main.go`：启动、监听和退出。
 - `server/internal/family/config.go`：环境配置、内部签名兼容。
-- `store.go / schema.sql / migrations.go`：schema v3–v5、v1/v2 快照及事务迁移。
+- `store.go / schema.sql / migrations.go`：schema v3–v6、v1/v2 快照及事务迁移。
 - `http.go / manage.go`：目录、导入、上传、任务、合集和 Range。
 - `watch.go / timelimit.go`：观看统计上报、每日时长限额与按天用量。
 - `worker.go`：任务领取、重试调度、FFmpeg、原子入库、取消和恢复。
@@ -62,6 +62,9 @@ Go 下载候选源，失败后重新解析一次；429 不立即轮询。连接�
 
 ## 客户端
 
+`apps/tv_app` 是独立 Kotlin 原生 TV 客户端（API 21+），使用单个 Media3 1.5.1 ExoPlayer + SurfaceView，复用 Go 的儿童角色目录、合集、MP4 Range、时长上报和 UDP 发现协议。播放器使用显式 MP4 extractors 与 HTTP 数据源，不接入 Flutter 的磁盘缓存 fork；客户端无数据库、目录快照、偏好或离线视频。观看事件保存在有界内存队列中，稳定 ID 支持当前进程内重试去重；进程丢失时未上报事件不保留。退后台释放播放器，回前台同步规则并从头恢复当前条目。已播放期间的列表刷新不替换当前 MediaItem，额度耗尽在下一条选片时切至安静合集。详情见 [TV 使用说明](../apps/tv_app/README.md)。
+
+
 家长端没有审核、发布或下架开关。完整刷新成功后替换数据，失败保留原目录。儿童 Stack 占满区域，导航叠加，横竖视频居中；搜索路由暂停首页并保存返回时的播放意图。离线和喜欢仍在设备本地，旧数据兼容。其余能力见 roadmap。
 
 
@@ -94,3 +97,17 @@ feed_player_cache.dart 管理当前播放页最近使用的最多 3 个 CachedFe
 媒体键是包含服务器地址、视频 ID、资源路径的摘要，移除 expires/role/sig 查询后复用不可变媒体字节；清单键包含完整 URL 的摘要，使新签名对应新清单。业务约束是视频 ID 不复用，替换视频产生新 ID。缓存不覆盖未读取范围，容量满时按片段最近使用淘汰，不承诺一个视频始终完整保留。
 
 family_video/playback_cache 通道只提供 stats/clear，不公开路径与源链接；磁盘操作在单个 IO 线程执行，结果回主线程。清理只调用此缓存的 removeResource，不触及 offline 目录。页面级 3 个播放器缓存与该字节缓存互相独立，内存压力可以释放播放器而不删除已观看数据。
+
+## v0.9 数据可靠性与维护
+
+观看事件回执与统计在同一事务提交，日期随事件保存，客户端持久队列按 50 条分批；Go worker 按作品身份复用已有视频。video_catalog / video_tags 在导入和编辑事务内更新，管理台通过 SQLite 筛选与分页。发布包元数据从 APK 读取，服务只提供 releases 中通过 SHA-256 校验的文件。server.lock 覆盖 HTTP 及离线维护命令，完整备份与恢复需要停服；定期数据库快照在空闲 worker 执行。操作与边界见 [operations-v0.9.md](operations-v0.9.md)。
+
+## v0.9.1 启动与连接
+
+family_api 提供按服务器/角色隔离的 StartupCache 与前台 BackgroundSync。两端先读本地快照后显示主页面，再并行校验兼容性与加载各数据段；成功数据独立落盘。儿童额度先于目录恢复，网络视频等待新授权后初始化。显式刷新淘汰旧后台读结果并保持原有失败保留语义；同一媒体的签名轮换保留原生播放器。请求使用共享 HTTP client 与可中止截止时间，重试随生命周期暂停，详见 verification-v0.9.1.md。
+
+## v0.9.2 服务发现
+
+Go 在 HTTP 启动时并行监听 UDP 8766，随进程 context 关闭；绑定失败仅记录日志，HTTP 与 worker 继续运行。发现请求与回复使用 family-video / protocol=1 和每次扫描的随机 nonce。回复包含随机进程实例 ID、主机名、实际 HTTP 端口及版本，不包含凭据。仅响应 IPv4 私有、链路本地或回环来源，限制报文长度与每来源回复速率。
+
+共享 LanDiscovery 在各 IPv4 私有网卡发短时广播，不遍历地址段。只接受本次 nonce，HTTP 主机取自 UDP 来源；900ms 内通过现有能力健康检查后才提供选择，按实例去重。一次搜索最多 4 秒，限制候选数量和验证次数；结束、选择、页面销毁或退后台释放 socket、HTTP client 和计时器。首次 Android 配置自动开始；已有地址不阻塞启动。多个服务由用户选择，扫码/手动入口作为回退。详见 verification-v0.9.2.md。

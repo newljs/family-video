@@ -17,8 +17,29 @@ FamilyApi apiWith(MockClient client) =>
 void main() {
   setUp(() => SharedPreferences.setMockInitialValues({}));
 
+  test('关闭限额会覆盖旧缓存，离线重启不会恢复旧限制', () async {
+    final api = apiWith(MockClient((r) async => http.Response('{}', 200)));
+    final budget = TimeBudget(api);
+    budget.apply({
+      'limit_minutes': 20,
+      'watched_ms_today': 60000,
+      'day': today(),
+    });
+    budget.apply({
+      'limit_minutes': 0,
+      'watched_ms_today': 60000,
+      'day': today(),
+    });
+    await Future<void>.delayed(Duration.zero);
+    final restored = TimeBudget(api);
+    await restored.restoreCached();
+    expect(restored.limited, isFalse);
+  });
+
   test('默认不限制：spend 累计今日用量但永不耗尽', () {
-    final budget = TimeBudget(apiWith(MockClient((r) async => http.Response('{}', 200))));
+    final budget = TimeBudget(
+      apiWith(MockClient((r) async => http.Response('{}', 200))),
+    );
     expect(budget.limited, isFalse);
     expect(budget.exhausted, isFalse);
     budget.spend(120000);
@@ -28,7 +49,9 @@ void main() {
   });
 
   test('限额下扣减触发 exhausted，之后不再累计', () {
-    final budget = TimeBudget(apiWith(MockClient((r) async => http.Response('{}', 200))));
+    final budget = TimeBudget(
+      apiWith(MockClient((r) async => http.Response('{}', 200))),
+    );
     budget.apply({
       'limit_minutes': 10,
       'watched_ms_today': 9 * 60000,
@@ -46,7 +69,9 @@ void main() {
   });
 
   test('apply 校正：同天取服务端与本地较大值，换天以服务端为准', () {
-    final budget = TimeBudget(apiWith(MockClient((r) async => http.Response('{}', 200))));
+    final budget = TimeBudget(
+      apiWith(MockClient((r) async => http.Response('{}', 200))),
+    );
     budget.apply({
       'limit_minutes': 30,
       'watched_ms_today': 60000,
@@ -56,10 +81,18 @@ void main() {
     expect(budget.afterLimitCollectionId, 'c1');
     budget.spend(1000);
     // 服务端还没收到最新一批上报（本地较大值保留）。
-    budget.apply({'limit_minutes': 30, 'watched_ms_today': 50000, 'day': today()});
+    budget.apply({
+      'limit_minutes': 30,
+      'watched_ms_today': 50000,
+      'day': today(),
+    });
     expect(budget.watchedMsToday, 61000);
     // 服务端日期前进（换天）→ 以服务端重新开始。
-    budget.apply({'limit_minutes': 30, 'watched_ms_today': 1000, 'day': '2020-01-01'});
+    budget.apply({
+      'limit_minutes': 30,
+      'watched_ms_today': 1000,
+      'day': '2020-01-01',
+    });
     expect(budget.watchedMsToday, 1000);
   });
 
@@ -72,7 +105,9 @@ void main() {
         'day': today(),
       }),
     });
-    final budget = TimeBudget(apiWith(MockClient((r) async => http.Response('{}', 200))));
+    final budget = TimeBudget(
+      apiWith(MockClient((r) async => http.Response('{}', 200))),
+    );
     await budget.restoreCached();
     expect(budget.limited, isTrue);
     expect(budget.limitMinutes, 20);
@@ -88,7 +123,9 @@ void main() {
         'day': '2020-01-01',
       }),
     });
-    final other = TimeBudget(apiWith(MockClient((r) async => http.Response('{}', 200))));
+    final other = TimeBudget(
+      apiWith(MockClient((r) async => http.Response('{}', 200))),
+    );
     await other.restoreCached();
     expect(other.limitMinutes, 20);
     expect(other.watchedMsToday, 0);

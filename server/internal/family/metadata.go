@@ -9,6 +9,7 @@ import (
 )
 
 type videoMetadata struct {
+	SourceID    string `json:"source_id,omitempty"`
 	Title       string `json:"title"`
 	Description string `json:"description"`
 }

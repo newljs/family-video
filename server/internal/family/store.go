@@ -53,7 +53,7 @@ func New(c Config) (*App, error) {
 		db.Close()
 		return nil, err
 	}
-	if version > 5 {
+	if version > 6 {
 		db.Close()
 		return nil, fmt.Errorf("数据库版本 %d 高于当前支持版本，拒绝降级", version)
 	}

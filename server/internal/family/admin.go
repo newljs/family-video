@@ -8,7 +8,6 @@ import (
 	"embed"
 	"errors"
 	"io/fs"
-	"mime"
 	"net/http"
 	"os"
 	"os/exec"
@@ -21,7 +20,7 @@ import (
 //go:embed admin.html
 var adminFiles embed.FS
 
-const serverVersion = "0.7.0"
+const serverVersion = "0.9.2"
 
 // f2ConfigPath 返回生效的抖音下载配置文件路径，与 resolver.go 的读取逻辑一致。
 func (a *App) f2ConfigPath() string {
@@ -102,7 +101,7 @@ func (a *App) systemInfo(w http.ResponseWriter, r *http.Request, _ string) error
 		info["disk_free_bytes"] = free
 	}
 
-	names := []string{"database", "videos", "thumbnails", "streams", "temp", "download-cache"}
+	names := []string{"database", "videos", "thumbnails", "streams", "temp", "download-cache", "backups", "releases", "quarantine"}
 	usages := make([]dirUsage, 0, len(names))
 	var total int64
 	for _, name := range names {
@@ -221,106 +220,5 @@ func (a *App) testDouyinConfig(w http.ResponseWriter, r *http.Request, _ string)
 var appDefs = []struct{ App, Label, Dir string }{
 	{"parent", "家长端", "parent_app"},
 	{"kids", "儿童端（抖音儿童版）", "kids_app"},
-}
-
-func apkPath(root, dir string) string {
-	base := filepath.Join(root, "apps", dir, "build", "app", "outputs", "flutter-apk")
-	for _, name := range []string{"app-release.apk", "app-debug.apk"} {
-		if p := filepath.Join(base, name); fileExists(p) {
-			return p
-		}
-	}
-	return filepath.Join(base, "app-debug.apk")
-}
-
-func fileExists(path string) bool {
-	info, err := os.Stat(path)
-	return err == nil && !info.IsDir()
-}
-
-func pubspecVersion(root, dir string) string {
-	data, err := os.ReadFile(filepath.Join(root, "apps", dir, "pubspec.yaml"))
-	if err != nil {
-		return ""
-	}
-	for _, line := range strings.Split(string(data), "\n") {
-		if v, ok := strings.CutPrefix(strings.TrimSpace(line), "version:"); ok {
-			return strings.TrimSpace(v)
-		}
-	}
-	return ""
-}
-
-// updateCheck 供客户端 App 启动时查询最新版本；任何角色可访问。
-func (a *App) updateCheck(w http.ResponseWriter, r *http.Request, _ string) error {
-	for _, def := range appDefs {
-		if def.App != r.PathValue("app") {
-			continue
-		}
-		item := map[string]any{"app": def.App, "label": def.Label, "available": false}
-		if v := pubspecVersion(a.Config.Root, def.Dir); v != "" {
-			item["version"] = v
-		}
-		if info, err := os.Stat(apkPath(a.Config.Root, def.Dir)); err == nil && !info.IsDir() {
-			item["available"] = true
-			item["size_bytes"] = info.Size()
-			item["url"] = "api/apps/" + def.App + "/download"
-		}
-		reply(w, 200, item)
-		return nil
-	}
-	return fail(404, "未知的客户端类型")
-}
-
-func (a *App) listApps(w http.ResponseWriter, r *http.Request, _ string) error {
-	result := make([]map[string]any, 0, len(appDefs))
-	for _, def := range appDefs {
-		item := map[string]any{"app": def.App, "label": def.Label, "available": false}
-		if v := pubspecVersion(a.Config.Root, def.Dir); v != "" {
-			item["version"] = v
-		}
-		path := apkPath(a.Config.Root, def.Dir)
-		if info, err := os.Stat(path); err == nil && !info.IsDir() {
-			item["available"] = true
-			item["size_bytes"] = info.Size()
-			item["updated_at"] = info.ModTime().UTC().Format(time.RFC3339)
-			item["url"] = "api/apps/" + def.App + "/download"
-		} else {
-			item["note"] = "尚未构建：在装有 Flutter 环境的机器上运行 scripts/build-android.ps1，产物出现在 apps/" + def.Dir + "/build/app/outputs/flutter-apk/"
-		}
-		result = append(result, item)
-	}
-	reply(w, 200, result)
-	return nil
-}
-
-func (a *App) downloadApp(w http.ResponseWriter, r *http.Request, _ string) error {
-	app := r.PathValue("app")
-	for _, def := range appDefs {
-		if def.App != app {
-			continue
-		}
-		path := apkPath(a.Config.Root, def.Dir)
-		f, err := os.Open(path)
-		if os.IsNotExist(err) {
-			return fail(404, "安装包尚未构建，请先运行 scripts/build-android.ps1")
-		}
-		if err != nil {
-			return err
-		}
-		defer f.Close()
-		info, err := f.Stat()
-		if err != nil {
-			return err
-		}
-		name := "family-video-" + def.App
-		if v := pubspecVersion(a.Config.Root, def.Dir); v != "" {
-			name += "-" + v
-		}
-		w.Header().Set("Content-Type", "application/vnd.android.package-archive")
-		w.Header().Set("Content-Disposition", mime.FormatMediaType("attachment", map[string]string{"filename": name + ".apk"}))
-		http.ServeContent(w, r, filepath.Base(path), info.ModTime(), f)
-		return nil
-	}
-	return fail(404, "未知的客户端类型")
+	{"tv", "电视端（轻量版）", "tv_app"},
 }

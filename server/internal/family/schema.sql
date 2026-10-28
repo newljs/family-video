@@ -52,3 +52,22 @@ CREATE TABLE IF NOT EXISTS watch_days (
  watched_ms INTEGER NOT NULL DEFAULT 0,
  updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
+CREATE TABLE IF NOT EXISTS watch_events (
+ event_id TEXT PRIMARY KEY, day TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS watch_events_day ON watch_events(day);
+CREATE TABLE IF NOT EXISTS video_sources (
+ video_id TEXT PRIMARY KEY REFERENCES videos(id) ON DELETE CASCADE,
+ platform TEXT NOT NULL, source_id TEXT NOT NULL,
+ UNIQUE(platform, source_id)
+);
+CREATE TABLE IF NOT EXISTS video_catalog (
+ video_id TEXT PRIMARY KEY REFERENCES videos(id) ON DELETE CASCADE,
+ category TEXT NOT NULL, search_text TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS video_catalog_category ON video_catalog(category, video_id);
+CREATE TABLE IF NOT EXISTS video_tags (
+ video_id TEXT NOT NULL REFERENCES videos(id) ON DELETE CASCADE,
+ tag TEXT NOT NULL, PRIMARY KEY(video_id, tag)
+);
+CREATE INDEX IF NOT EXISTS video_tags_tag ON video_tags(tag, video_id);

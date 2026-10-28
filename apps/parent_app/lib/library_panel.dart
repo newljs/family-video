@@ -1,22 +1,31 @@
 import 'package:family_api/family_api.dart';
 import 'package:flutter/material.dart';
 import 'ui.dart';
+import 'paged_items.dart';
 
-/// 视频库面板：GridView.builder 虚拟化渲染（几千条也只构建可见卡片）、
-/// 缩略图按显示宽度降采样解码、支持排序与多选批量删除/加入合集。
+/// 视频库按页加载，搜索和排序交由服务端处理；仅构建可见卡片。
 class LibraryPanel extends StatefulWidget {
   final List<dynamic> videos;
   final List<dynamic> collections;
+  final int? total;
+  final PageLoader? loadPage;
   final bool busy;
   final String Function(String) url;
   final ValueChanged<Map<String, dynamic>> onPreview;
   final Future<void> Function(Map<String, dynamic>, Map<String, String>) onEdit;
   final Future<void> Function(Map<String, dynamic>) onDelete;
   final Future<void> Function(List<String> ids) onBatchDelete;
-  final Future<void> Function(List<String> ids, String? collectionId, String newTitle) onBatchCollect;
+  final Future<void> Function(
+    List<String> ids,
+    String? collectionId,
+    String newTitle,
+  )
+  onBatchCollect;
   const LibraryPanel({
     super.key,
     required this.videos,
+    this.total,
+    this.loadPage,
     required this.collections,
     required this.busy,
     required this.url,
@@ -31,6 +40,8 @@ class LibraryPanel extends StatefulWidget {
 }
 
 class _LibraryPanelState extends State<LibraryPanel> {
+  late final page = PagedItems(loader: widget.loadPage, pageSize: 24);
+  final scroll = ScrollController();
   String search = '';
   String sort = 'newest';
   bool batchMode = false;
@@ -38,14 +49,15 @@ class _LibraryPanelState extends State<LibraryPanel> {
 
   List<Map<String, dynamic>> get items {
     final query = search.toLowerCase();
-    final matched = widget.videos
-        .where(
-          (v) => "${v['title']} ${v['description'] ?? ''}"
-              .toLowerCase()
-              .contains(query),
-        )
-        .map((raw) => Map<String, dynamic>.from(raw))
-        .toList();
+    final matched =
+        widget.videos
+            .where(
+              (v) => "${v['title']} ${v['description'] ?? ''}"
+                  .toLowerCase()
+                  .contains(query),
+            )
+            .map((raw) => Map<String, dynamic>.from(raw))
+            .toList();
     int plays(Map<String, dynamic> v) => (v['plays'] as num?)?.toInt() ?? 0;
     int done(Map<String, dynamic> v) =>
         (v['completed_count'] as num?)?.toInt() ?? 0;
@@ -65,14 +77,64 @@ class _LibraryPanelState extends State<LibraryPanel> {
   }
 
   void togglePick(String id) => setState(() {
-        selected.contains(id) ? selected.remove(id) : selected.add(id);
-      });
+    selected.contains(id) ? selected.remove(id) : selected.add(id);
+  });
+
+  @override
+  void initState() {
+    super.initState();
+    page.seed(widget.videos, widget.total);
+    page.addListener(changed);
+    scroll.addListener(() {
+      if (scroll.position.extentAfter < 480 && page.error == null) page.more();
+    });
+  }
+
+  void changed() {
+    if (mounted) setState(() {});
+  }
+
+  @override
+  void didUpdateWidget(covariant LibraryPanel oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.videos != widget.videos) {
+      if (widget.loadPage != null) {
+        if (search.isEmpty &&
+            sort == 'newest' &&
+            page.items.length <= page.pageSize) {
+          page.seed(widget.videos, widget.total);
+        } else {
+          page.refresh();
+        }
+      } else {
+        page.seed(items, null);
+        selected.retainAll(widget.videos.map((v) => '${v['id']}'));
+      }
+    }
+  }
+
+  void applyQuery() {
+    selected.clear();
+    if (scroll.hasClients) scroll.jumpTo(0);
+    if (widget.loadPage == null) {
+      page.seed(items, null);
+    } else {
+      page.refresh(query: {'search': search, 'sort': sort});
+    }
+  }
+
+  @override
+  void dispose() {
+    scroll.dispose();
+    page.dispose();
+    super.dispose();
+  }
 
   @override
   Widget build(BuildContext context) {
-    final list = items;
+    final list = page.items.map((v) => Map<String, dynamic>.from(v)).toList();
     return RefreshIndicator(
-      onRefresh: () async {},
+      onRefresh: page.refresh,
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
@@ -83,11 +145,19 @@ class _LibraryPanelState extends State<LibraryPanel> {
               children: [
                 SectionHeading('视频库', subtitle: '处理完成的内容会直接出现在儿童端。'),
                 const SizedBox(height: 16),
-                Row(
+                Wrap(
+                  spacing: 10,
+                  runSpacing: 8,
+                  crossAxisAlignment: WrapCrossAlignment.center,
                   children: [
-                    Expanded(
+                    SizedBox(
+                      width: 260,
                       child: TextField(
-                        onChanged: (v) => setState(() => search = v.trim()),
+                        onChanged:
+                            (v) => setState(() {
+                              search = v.trim();
+                              applyQuery();
+                            }),
                         decoration: const InputDecoration(
                           labelText: '搜索标题或描述',
                           prefixIcon: Icon(Icons.search),
@@ -96,78 +166,106 @@ class _LibraryPanelState extends State<LibraryPanel> {
                         ),
                       ),
                     ),
-                    const SizedBox(width: 10),
                     DropdownButton<String>(
                       value: sort,
                       items: const [
                         DropdownMenuItem(value: 'newest', child: Text('最新优先')),
-                        DropdownMenuItem(value: 'most_played', child: Text('播放最多')),
-                        DropdownMenuItem(value: 'most_completed', child: Text('完播最多')),
-                        DropdownMenuItem(value: 'most_watched', child: Text('观看最久')),
+                        DropdownMenuItem(
+                          value: 'most_played',
+                          child: Text('播放最多'),
+                        ),
+                        DropdownMenuItem(
+                          value: 'most_completed',
+                          child: Text('完播最多'),
+                        ),
+                        DropdownMenuItem(
+                          value: 'most_watched',
+                          child: Text('观看最久'),
+                        ),
                       ],
-                      onChanged: (v) => setState(() => sort = v ?? 'newest'),
+                      onChanged:
+                          (v) => setState(() {
+                            sort = v ?? 'newest';
+                            applyQuery();
+                          }),
                     ),
-                    const SizedBox(width: 10),
                     FilledButton.tonal(
-                      onPressed: () => setState(() {
-                        batchMode = !batchMode;
-                        selected.clear();
-                      }),
+                      onPressed:
+                          () => setState(() {
+                            batchMode = !batchMode;
+                            selected.clear();
+                          }),
                       child: Text(batchMode ? '退出多选' : '批量管理'),
                     ),
                   ],
                 ),
                 const SizedBox(height: 8),
-                Text('${list.length} / ${widget.videos.length} 条视频'),
+                Text('已加载 ${list.length} / ${page.total} 条视频'),
                 if (batchMode) ...[
                   const SizedBox(height: 8),
                   _BatchBar(
                     count: selected.length,
                     total: list.length,
                     busy: widget.busy,
-                    onSelectAll: () => setState(() {
-                      selected.addAll(list.map((v) => '${v['id']}'));
-                    }),
+                    onSelectAll:
+                        () => setState(() {
+                          selected.addAll(list.map((v) => '${v['id']}'));
+                        }),
                     onClear: () => setState(() => selected.clear()),
-                    onCollect: selected.isEmpty || widget.busy
-                        ? null
-                        : () => pickCollection(list),
-                    onDelete: selected.isEmpty || widget.busy
-                        ? null
-                        : () => confirmBatchDelete(),
+                    onCollect:
+                        selected.isEmpty || widget.busy
+                            ? null
+                            : () => pickCollection(list),
+                    onDelete:
+                        selected.isEmpty || widget.busy
+                            ? null
+                            : () => confirmBatchDelete(),
                   ),
                 ],
               ],
             ),
           ),
           Expanded(
-            child: list.isEmpty
-                ? ListView(
-                    physics: const AlwaysScrollableScrollPhysics(),
-                    children: [
-                      PanelCard(
-                        child: EmptyPanel(
-                          icon: Icons.video_library_outlined,
-                          title: '没有符合条件的视频',
-                          message: '试试其他关键词；新内容可以从收集箱导入。',
+            child:
+                list.isEmpty
+                    ? ListView(
+                      physics: const AlwaysScrollableScrollPhysics(),
+                      children: [
+                        if (page.loading || page.error != null)
+                          PageFooter(page),
+                        if (!page.loading && page.error == null)
+                          PanelCard(
+                            child: EmptyPanel(
+                              icon: Icons.video_library_outlined,
+                              title: '没有符合条件的视频',
+                              message: '试试其他关键词；新内容可以从收集箱导入。',
+                            ),
+                          ),
+                      ],
+                    )
+                    : CustomScrollView(
+                      key: const PageStorageKey('parent-library-grid'),
+                      controller: scroll,
+                      physics: const AlwaysScrollableScrollPhysics(),
+                      slivers: [
+                        SliverPadding(
+                          padding: const EdgeInsets.fromLTRB(18, 12, 18, 0),
+                          sliver: SliverGrid.builder(
+                            gridDelegate:
+                                const SliverGridDelegateWithMaxCrossAxisExtent(
+                                  maxCrossAxisExtent: 330,
+                                  mainAxisSpacing: 14,
+                                  crossAxisSpacing: 14,
+                                  // 固定卡片像素高度：窄屏两列时按比例缩高会挤爆卡片内容
+                                  mainAxisExtent: 380,
+                                ),
+                            itemCount: list.length,
+                            itemBuilder: (context, i) => videoCard(list[i]),
+                          ),
                         ),
-                      ),
-                    ],
-                  )
-                : GridView.builder(
-                    key: const PageStorageKey('parent-library-grid'),
-                    padding: const EdgeInsets.fromLTRB(18, 12, 18, 24),
-                    physics: const AlwaysScrollableScrollPhysics(),
-                    gridDelegate: const SliverGridDelegateWithMaxCrossAxisExtent(
-                      maxCrossAxisExtent: 330,
-                      mainAxisSpacing: 14,
-                      crossAxisSpacing: 14,
-                      // 固定卡片像素高度：窄屏两列时按比例缩高会挤爆卡片内容
-                      mainAxisExtent: 380,
+                        SliverToBoxAdapter(child: PageFooter(page)),
+                      ],
                     ),
-                    itemCount: list.length,
-                    itemBuilder: (context, i) => videoCard(list[i]),
-                  ),
           ),
         ],
       ),
@@ -186,9 +284,10 @@ class _LibraryPanelState extends State<LibraryPanel> {
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
           InkWell(
-            onTap: batchMode
-                ? () => togglePick('${video['id']}')
-                : () => widget.onPreview(video),
+            onTap:
+                batchMode
+                    ? () => togglePick('${video['id']}')
+                    : () => widget.onPreview(video),
             child: SizedBox(
               height: 136,
               child: Stack(
@@ -196,23 +295,25 @@ class _LibraryPanelState extends State<LibraryPanel> {
                 children: [
                   ColoredBox(
                     color: const Color(0xffe9eeef),
-                    child: video['thumbnail_url'] == null
-                        ? const Icon(
-                            Icons.movie_outlined,
-                            size: 40,
-                            color: Color(0xff9caeae),
-                          )
-                        : CachedThumbnail(
-                            widget.url(video['thumbnail_url']),
-                            fit: BoxFit.cover,
-                            // 按卡片宽度降采样解码，几百条列表不再卡顿
-                            cacheWidth: 480,
-                            errorBuilder: (_, _, _) => const Icon(
+                    child:
+                        video['thumbnail_url'] == null
+                            ? const Icon(
                               Icons.movie_outlined,
                               size: 40,
                               color: Color(0xff9caeae),
+                            )
+                            : CachedThumbnail(
+                              widget.url(video['thumbnail_url']),
+                              fit: BoxFit.cover,
+                              // 按卡片宽度降采样解码，几百条列表不再卡顿
+                              cacheWidth: 480,
+                              errorBuilder:
+                                  (_, _, _) => const Icon(
+                                    Icons.movie_outlined,
+                                    size: 40,
+                                    color: Color(0xff9caeae),
+                                  ),
                             ),
-                          ),
                   ),
                   if (batchMode)
                     Positioned(
@@ -338,22 +439,21 @@ class _LibraryPanelState extends State<LibraryPanel> {
   Future<void> confirmBatchDelete() async {
     final confirmed = await showDialog<bool>(
       context: context,
-      builder: (context) => AlertDialog(
-        title: Text('删除选中的 ${selected.length} 条视频？'),
-        content: const Text(
-          '将从家庭电脑和所有合集中删除这些视频。已经缓存到设备的副本需要在设备上单独删除。',
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(context, false),
-            child: const Text('保留'),
+      builder:
+          (context) => AlertDialog(
+            title: Text('删除选中的 ${selected.length} 条视频？'),
+            content: const Text('将从家庭电脑和所有合集中删除这些视频。已经缓存到设备的副本需要在设备上单独删除。'),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.pop(context, false),
+                child: const Text('保留'),
+              ),
+              FilledButton(
+                onPressed: () => Navigator.pop(context, true),
+                child: const Text('确认删除'),
+              ),
+            ],
           ),
-          FilledButton(
-            onPressed: () => Navigator.pop(context, true),
-            child: const Text('确认删除'),
-          ),
-        ],
-      ),
     );
     if (confirmed == true) {
       await widget.onBatchDelete(selected.toList());
@@ -366,64 +466,74 @@ class _LibraryPanelState extends State<LibraryPanel> {
     final name = TextEditingController();
     final result = await showDialog<List<String?>>(
       context: context,
-      builder: (context) => StatefulBuilder(
-        builder: (context, update) => AlertDialog(
-          title: Text('把 ${selected.length} 条视频加入合集'),
-          content: SizedBox(
-            width: 420,
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              crossAxisAlignment: CrossAxisAlignment.stretch,
-              children: [
-                Flexible(
-                  child: widget.collections.isEmpty
-                      ? const Text('还没有合集，可在下方输入新合集名称')
-                      : ListView.builder(
-                          shrinkWrap: true,
-                          itemCount: widget.collections.length,
-                          itemBuilder: (context, i) {
-                            final c =
-                                Map<String, dynamic>.from(widget.collections[i]);
-                            return RadioListTile<String>(
-                              value: '${c['id']}',
-                              groupValue: chosenId,
-                              dense: true,
-                              title: Text('${c['title']}'),
-                              subtitle: Text(
-                                '${(c['videos'] as List).length} 条视频',
-                              ),
-                              onChanged: (v) => update(() => chosenId = v),
-                            );
-                          },
+      builder:
+          (context) => StatefulBuilder(
+            builder:
+                (context, update) => AlertDialog(
+                  title: Text('把 ${selected.length} 条视频加入合集'),
+                  content: SizedBox(
+                    width: 420,
+                    child: Column(
+                      mainAxisSize: MainAxisSize.min,
+                      crossAxisAlignment: CrossAxisAlignment.stretch,
+                      children: [
+                        Flexible(
+                          child:
+                              widget.collections.isEmpty
+                                  ? const Text('还没有合集，可在下方输入新合集名称')
+                                  : ListView.builder(
+                                    shrinkWrap: true,
+                                    itemCount: widget.collections.length,
+                                    itemBuilder: (context, i) {
+                                      final c = Map<String, dynamic>.from(
+                                        widget.collections[i],
+                                      );
+                                      return RadioListTile<String>(
+                                        value: '${c['id']}',
+                                        groupValue: chosenId,
+                                        dense: true,
+                                        title: Text('${c['title']}'),
+                                        subtitle: Text(
+                                          '${(c['videos'] as List).length} 条视频',
+                                        ),
+                                        onChanged:
+                                            (v) => update(() => chosenId = v),
+                                      );
+                                    },
+                                  ),
                         ),
-                ),
-                TextField(
-                  controller: name,
-                  decoration: const InputDecoration(
-                    labelText: '或创建新合集（填写后优先使用）',
+                        TextField(
+                          controller: name,
+                          decoration: const InputDecoration(
+                            labelText: '或创建新合集（填写后优先使用）',
+                          ),
+                        ),
+                      ],
+                    ),
                   ),
+                  actions: [
+                    TextButton(
+                      onPressed: () => Navigator.pop(context),
+                      child: const Text('取消'),
+                    ),
+                    FilledButton(
+                      onPressed:
+                          () => Navigator.pop(context, [
+                            chosenId,
+                            name.text.trim(),
+                          ]),
+                      child: const Text('保存'),
+                    ),
+                  ],
                 ),
-              ],
-            ),
           ),
-          actions: [
-            TextButton(
-              onPressed: () => Navigator.pop(context),
-              child: const Text('取消'),
-            ),
-            FilledButton(
-              onPressed: () => Navigator.pop(
-                context,
-                [chosenId, name.text.trim()],
-              ),
-              child: const Text('保存'),
-            ),
-          ],
-        ),
-      ),
     );
     if (result != null) {
-      await widget.onBatchCollect(selected.toList(), result[0], result[1] ?? '');
+      await widget.onBatchCollect(
+        selected.toList(),
+        result[0],
+        result[1] ?? '',
+      );
       if (mounted) {
         setState(() {
           selected.clear();
@@ -444,22 +554,23 @@ class _LibraryPanelState extends State<LibraryPanel> {
   Future<void> remove(Map<String, dynamic> video) async {
     final confirmed = await showDialog<bool>(
       context: context,
-      builder: (context) => AlertDialog(
-        title: const Text('删除这个视频？'),
-        content: Text(
-          '“${video['title']}”将从家庭电脑和所有合集中删除。已经缓存到设备的副本需要在设备上单独删除。',
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(context, false),
-            child: const Text('保留'),
+      builder:
+          (context) => AlertDialog(
+            title: const Text('删除这个视频？'),
+            content: Text(
+              '“${video['title']}”将从家庭电脑和所有合集中删除。已经缓存到设备的副本需要在设备上单独删除。',
+            ),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.pop(context, false),
+                child: const Text('保留'),
+              ),
+              FilledButton(
+                onPressed: () => Navigator.pop(context, true),
+                child: const Text('确认删除'),
+              ),
+            ],
           ),
-          FilledButton(
-            onPressed: () => Navigator.pop(context, true),
-            child: const Text('确认删除'),
-          ),
-        ],
-      ),
     );
     if (confirmed == true) await widget.onDelete(video);
   }
@@ -491,9 +602,11 @@ class _BatchBar extends StatelessWidget {
       runSpacing: 6,
       crossAxisAlignment: WrapCrossAlignment.center,
       children: [
-        Text('已选 $count / $total 条',
-            style: const TextStyle(fontWeight: FontWeight.w600)),
-        TextButton(onPressed: onSelectAll, child: const Text('全选')),
+        Text(
+          '已选 $count / $total 条',
+          style: const TextStyle(fontWeight: FontWeight.w600),
+        ),
+        TextButton(onPressed: onSelectAll, child: const Text('全选已加载')),
         TextButton(onPressed: onClear, child: const Text('清除')),
         TextButton.icon(
           onPressed: onCollect,

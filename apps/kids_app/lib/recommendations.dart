@@ -19,13 +19,17 @@ class RecommendationOrder {
   List<dynamic> arrange(List<dynamic> items) {
     final byId = {for (final item in items) '${item['id']}': item};
     _ids.removeWhere((id) => !byId.containsKey(id));
-    final added = byId.keys.where((id) => !_ids.contains(id)).toList()
-      ..shuffle(random);
+    final known = _ids.toSet();
+    final added =
+        byId.keys.where((id) => !known.contains(id)).toList()..shuffle(random);
     _ids.addAll(added);
     final buckets = [<String>[], <String>[], <String>[]];
     for (final id in _ids) {
       buckets[_bucket(Map<String, dynamic>.from(byId[id]!))].add(id);
     }
-    return [for (final bucket in buckets) for (final id in bucket) byId[id]!];
+    return [
+      for (final bucket in buckets)
+        for (final id in bucket) byId[id]!,
+    ];
   }
 }

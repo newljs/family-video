@@ -1,18 +1,34 @@
 package family
 
 // Web 管理台的资源库分页列表、分类与话题标签筛选。
-// 分类由标题/描述关键词规则归纳，标签取自 #话题 文本；均不落库，
-// 每次请求基于现有数据即时计算（本地库规模下开销可忽略）。
+// 导入、编辑与升级时维护分类和标签索引；筛选、排序、分页均在 SQLite 执行。
 
 import (
+	"database/sql"
 	"net/http"
 	"os"
 	"path/filepath"
 	"regexp"
-	"sort"
 	"strconv"
 	"strings"
 )
+
+func indexVideo(tx *sql.Tx, id, title, description string) error {
+	if _, err := tx.Exec(`INSERT INTO video_catalog(video_id,category,search_text) VALUES(?,?,?)
+ON CONFLICT(video_id) DO UPDATE SET category=excluded.category,search_text=excluded.search_text`,
+		id, classify(title, description), strings.ToLower(title+" "+description)); err != nil {
+		return err
+	}
+	if _, err := tx.Exec("DELETE FROM video_tags WHERE video_id=?", id); err != nil {
+		return err
+	}
+	for _, tag := range extractHashtags(title, description) {
+		if _, err := tx.Exec("INSERT INTO video_tags(video_id,tag) VALUES(?,?)", id, tag); err != nil {
+			return err
+		}
+	}
+	return nil
+}
 
 // hashtag 提取：# 或全角 ＃ 后的非空白连续片段，容忍尾部分隔符。
 var hashtagPattern = regexp.MustCompile(`[#＃]([^\s#＃，。,.;；:：！!？?、""]{1,30})`)
@@ -62,50 +78,25 @@ func extractHashtags(title, description string) []string {
 	return tags
 }
 
-type countItem struct {
-	Name  string `json:"name"`
-	Count int    `json:"count"`
-}
-
-func sortedCounts(counts map[string]int) []countItem {
-	items := make([]countItem, 0, len(counts))
-	for name, count := range counts {
-		items = append(items, countItem{name, count})
-	}
-	sort.Slice(items, func(i, j int) bool {
-		if items[i].Count != items[j].Count {
-			return items[i].Count > items[j].Count
-		}
-		return items[i].Name < items[j].Name
-	})
-	return items
-}
-
 func (a *App) libraryMeta(w http.ResponseWriter, r *http.Request, _ string) error {
-	items, err := query(a.DB, "SELECT title, description FROM videos")
+	tx, err := a.DB.BeginTx(r.Context(), &sql.TxOptions{ReadOnly: true})
 	if err != nil {
 		return err
 	}
-	categoryCounts := map[string]int{}
-	tagCounts := map[string]int{}
-	for _, item := range items {
-		title, _ := item["title"].(string)
-		description, _ := item["description"].(string)
-		categoryCounts[classify(title, description)]++
-		for _, tag := range extractHashtags(title, description) {
-			tagCounts[tag]++
-		}
+	defer tx.Rollback()
+	categories, err := query(tx, "SELECT category AS name,COUNT(*) AS count FROM video_catalog GROUP BY category ORDER BY count DESC,category")
+	if err != nil {
+		return err
 	}
-	const maxTags = 120
-	tags := sortedCounts(tagCounts)
-	if len(tags) > maxTags {
-		tags = tags[:maxTags]
+	tags, err := query(tx, "SELECT tag AS name,COUNT(*) AS count FROM video_tags GROUP BY tag ORDER BY count DESC,tag LIMIT 120")
+	if err != nil {
+		return err
 	}
-	reply(w, 200, map[string]any{
-		"categories": sortedCounts(categoryCounts),
-		"tags":       tags,
-		"total":      len(items),
-	})
+	var total int
+	if err = tx.QueryRow("SELECT COUNT(*) FROM videos").Scan(&total); err != nil {
+		return err
+	}
+	reply(w, 200, map[string]any{"categories": categories, "tags": tags, "total": total})
 	return nil
 }
 
@@ -119,71 +110,59 @@ func (a *App) libraryList(w http.ResponseWriter, r *http.Request, role string) e
 	if limit <= 0 || limit > 200 {
 		limit = 60
 	}
-	tag := strings.TrimSpace(q.Get("tag"))
-	category := strings.TrimSpace(q.Get("category"))
-	search := strings.ToLower(strings.TrimSpace(q.Get("search")))
-	sortBy := q.Get("sort")
-
-	items, err := query(a.DB, `SELECT v.*, IFNULL(s.plays,0) AS plays, IFNULL(s.watched_ms,0) AS watched_ms,
-IFNULL(s.completed,0) AS completed_count, s.last_watched_at
-FROM videos v LEFT JOIN watch_stats s ON s.video_id=v.id
-ORDER BY v.created_at DESC, v.rowid DESC`)
+	where := []string{"1=1"}
+	args := []any{}
+	if search := strings.ToLower(strings.TrimSpace(q.Get("search"))); search != "" {
+		where = append(where, "instr(c.search_text,?)>0")
+		args = append(args, search)
+	}
+	if category := strings.TrimSpace(q.Get("category")); category != "" {
+		where = append(where, "c.category=?")
+		args = append(args, category)
+	}
+	if tag := strings.TrimSpace(q.Get("tag")); tag != "" {
+		where = append(where, "EXISTS(SELECT 1 FROM video_tags t WHERE t.video_id=v.id AND t.tag=?)")
+		args = append(args, tag)
+	}
+	order := "v.created_at DESC,v.rowid DESC"
+	switch q.Get("sort") {
+	case "most_played":
+		order = "IFNULL(s.plays,0) DESC," + order
+	case "most_completed":
+		order = "IFNULL(s.completed,0) DESC," + order
+	case "most_watched":
+		order = "IFNULL(s.watched_ms,0) DESC," + order
+	}
+	from := " FROM videos v JOIN video_catalog c ON c.video_id=v.id LEFT JOIN watch_stats s ON s.video_id=v.id WHERE " + strings.Join(where, " AND ")
+	tx, err := a.DB.BeginTx(r.Context(), &sql.TxOptions{ReadOnly: true})
 	if err != nil {
 		return err
 	}
-	filtered := make([]map[string]any, 0, len(items))
-	for _, item := range items {
-		title, _ := item["title"].(string)
-		description, _ := item["description"].(string)
-		text := strings.ToLower(title + " " + description)
-		if search != "" && !strings.Contains(text, search) {
-			continue
-		}
-		if category != "" && classify(title, description) != category {
-			continue
-		}
-		if tag != "" {
-			found := false
-			for _, t := range extractHashtags(title, description) {
-				if t == tag {
-					found = true
-					break
-				}
-			}
-			if !found {
-				continue
-			}
-		}
-		filtered = append(filtered, item)
+	defer tx.Rollback()
+	var total int
+	if err = tx.QueryRow("SELECT COUNT(*)"+from, args...).Scan(&total); err != nil {
+		return err
 	}
-	plays := func(v map[string]any) int { n, _ := v["plays"].(int64); return int(n) }
-	watched := func(v map[string]any) int { n, _ := v["watched_ms"].(int64); return int(n) }
-	completed := func(v map[string]any) int { n, _ := v["completed_count"].(int64); return int(n) }
-	switch sortBy {
-	case "most_played":
-		sort.SliceStable(filtered, func(i, j int) bool { return plays(filtered[i]) > plays(filtered[j]) })
-	case "most_completed":
-		sort.SliceStable(filtered, func(i, j int) bool { return completed(filtered[i]) > completed(filtered[j]) })
-	case "most_watched":
-		sort.SliceStable(filtered, func(i, j int) bool { return watched(filtered[i]) > watched(filtered[j]) })
-	}
-	total := len(filtered)
 	if offset > total {
 		offset = total
 	}
-	end := offset + limit
-	if end > total {
-		end = total
+	pageArgs := append(append([]any{}, args...), limit, offset)
+	items, err := query(tx, `SELECT v.*,c.category,IFNULL(s.plays,0) AS plays,IFNULL(s.watched_ms,0) AS watched_ms,
+IFNULL(s.completed,0) AS completed_count,s.last_watched_at`+from+" ORDER BY "+order+" LIMIT ? OFFSET ?", pageArgs...)
+	if err != nil {
+		return err
 	}
-	page := filtered[offset:end]
-	for _, v := range page {
-		if name, _ := v["path"].(string); name != "" && filepath.Base(name) == name {
+	if err = tx.Commit(); err != nil {
+		return err
+	}
+	for _, item := range items {
+		if name, _ := item["path"].(string); name != "" && filepath.Base(name) == name {
 			if info, e := os.Stat(filepath.Join(a.Config.Data, "videos", name)); e == nil && !info.IsDir() {
-				v["size_bytes"] = info.Size()
+				item["size_bytes"] = info.Size()
 			}
 		}
-		a.present(v, role)
+		a.present(item, role)
 	}
-	reply(w, 200, map[string]any{"items": page, "total": total, "offset": offset, "limit": limit})
+	reply(w, 200, map[string]any{"items": items, "total": total, "offset": offset, "limit": limit})
 	return nil
 }

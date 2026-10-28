@@ -9,6 +9,8 @@ import (
 )
 
 type watchReport struct {
+	EventID   string `json:"event_id"`
+	Day       string `json:"day"`
 	VideoID   string `json:"video_id"`
 	WatchedMS int64  `json:"watched_ms"`
 	Played    bool   `json:"played"`
@@ -35,11 +37,34 @@ ON CONFLICT(video_id) DO UPDATE SET
  watched_ms=watched_ms+excluded.watched_ms,
  completed=completed+excluded.completed,
  last_watched_at=CURRENT_TIMESTAMP`
-	watchedToday := int64(0)
+	now := time.Now()
+	day := now.Format("2006-01-02")
+	oldest := now.AddDate(0, 0, -31).Format("2006-01-02")
+	watchedDays := map[string]int64{}
 	for _, report := range body.Reports {
 		if !safeVideoID.MatchString(report.VideoID) ||
 			report.WatchedMS < 0 || report.WatchedMS > 24*3600*1000 {
 			continue // 单条非法跳过，不影响其余上报
+		}
+		reportDay := report.Day
+		if reportDay == "" {
+			reportDay = day // 兼容旧客户端；新客户端始终携带事件 ID 和观看日期。
+		}
+		parsed, parseErr := time.Parse("2006-01-02", reportDay)
+		if parseErr != nil || parsed.Format("2006-01-02") != reportDay || reportDay < oldest || reportDay > day {
+			continue
+		}
+		if report.EventID != "" {
+			if len(report.EventID) > 64 || !safeVideoID.MatchString(report.EventID) {
+				continue
+			}
+			result, err := tx.Exec("INSERT OR IGNORE INTO watch_events(event_id,day) VALUES(?,?)", report.EventID, reportDay)
+			if err != nil {
+				return err
+			}
+			if count, _ := result.RowsAffected(); count == 0 {
+				continue // 回执与统计在同一事务中，响应丢失后重试不会重复扣额度。
+			}
 		}
 		var exists int
 		if err := tx.QueryRow("SELECT COUNT(*) FROM videos WHERE id=?", report.VideoID).Scan(&exists); err != nil {
@@ -58,17 +83,21 @@ ON CONFLICT(video_id) DO UPDATE SET
 		if _, err := tx.Exec(upsert, report.VideoID, plays, report.WatchedMS, completed); err != nil {
 			return err
 		}
-		watchedToday += report.WatchedMS
+		watchedDays[reportDay] += report.WatchedMS
 	}
-	// 时长额度以服务端按天累计为准；顺带清理一个月前的旧日期。
-	day := today()
-	if watchedToday > 0 {
+	for reportDay, watched := range watchedDays {
+		if watched == 0 {
+			continue
+		}
 		if _, err = tx.Exec(`INSERT INTO watch_days(day,watched_ms) VALUES(?,?)
-ON CONFLICT(day) DO UPDATE SET watched_ms=watched_ms+excluded.watched_ms, updated_at=CURRENT_TIMESTAMP`, day, watchedToday); err != nil {
+ON CONFLICT(day) DO UPDATE SET watched_ms=watched_ms+excluded.watched_ms, updated_at=CURRENT_TIMESTAMP`, reportDay, watched); err != nil {
 			return err
 		}
 	}
-	if _, err = tx.Exec("DELETE FROM watch_days WHERE day < ?", time.Now().AddDate(0, 0, -31).Format("2006-01-02")); err != nil {
+	if _, err = tx.Exec("DELETE FROM watch_days WHERE day < ?", oldest); err != nil {
+		return err
+	}
+	if _, err = tx.Exec("DELETE FROM watch_events WHERE day < ?", oldest); err != nil {
 		return err
 	}
 	if err = tx.Commit(); err != nil {
