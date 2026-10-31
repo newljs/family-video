@@ -95,4 +95,6 @@ CI 固定 Go 1.26.0、Flutter 3.44.6 / Dart 3.12.2、JDK 17 和 Android SDK 36�
 
 第一条执行 Go tests/vet、两端与共享包/播放器适配包的 Flutter 分析，以及存在的 Dart 测试；第二条额外构建双端 debug APK 并运行播放器 Java 单元测试。分析保留旧 Flutter 兼容 API 的弃用 info，不允许 warning/error。原生构建需要可用的 JDK、Android SDK、Gradle 和依赖下载网络。GitHub Actions 配置在 `.github/workflows/check.yml`，本地运行通过不等于远程 CI 已运行。
 
+CI 的 Android 组件步骤只校验 runner 镜像预装的 platform 36/35 与 build-tools 36.0.0，缺失时才调用 `sdkmanager` 安装，因此组件齐全时不触碰 SDK 目录。此前使用的 `android-actions/setup-android@v3` 已移除：它会额外下载钉死的 cmdline-tools 16.0 并弃用镜像自带的 12.0/20.0，且在 2026-10-31 之前的 5 次运行中全部失败；GitHub 需要登录才能查看 Actions 日志，该步骤的具体报错未取到，改动方向是去掉这层多余依赖而不是复现它。
+
 真机验收：Android 系统分享冷/热启动、连续滑动与倍速/快进计时、后台/待机恢复、断网重连、多设备额度、磁盘缓存清理、使用原签名的覆盖升级，以及电视遥控焦点。单元测试与 APK 编译不能替代这些设备检查。

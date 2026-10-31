@@ -22,10 +22,40 @@ jobs:
           flutter-version: '3.44.6'
           channel: stable
           cache: true
-      - uses: android-actions/setup-android@v3
       - uses: gradle/actions/setup-gradle@v4
-      - name: Install Android platform
-        run: sdkmanager 'platforms;android-36' 'platforms;android-35' 'build-tools;36.0.0'
+      # runner 镜像（ubuntu-24 带 cmdline-tools 12.0，ubuntu-26 带 20.0）已预装本项目需要的
+      # platform 与 build-tools，因此这里只做校验，缺什么才装什么：无谓的 sdkmanager 写入
+      # 会依赖 /usr/local/lib/android/sdk 的可写性，是这类环境步骤最常见的失败点。
+      - name: Ensure Android SDK components
+        run: |
+          set -euo pipefail
+          sdk_root="${ANDROID_HOME:-${ANDROID_SDK_ROOT:-/usr/local/lib/android/sdk}}"
+          sdkmanager_bin="$(command -v sdkmanager || true)"
+          if [ -z "$sdkmanager_bin" ]; then
+            for candidate in "$sdk_root"/cmdline-tools/*/bin/sdkmanager; do
+              if [ -x "$candidate" ]; then sdkmanager_bin="$candidate"; break; fi
+            done
+          fi
+          if [ -z "$sdkmanager_bin" ]; then
+            echo "::error::找不到 sdkmanager（ANDROID_HOME=${ANDROID_HOME:-未设置}）"
+            exit 1
+          fi
+          echo "sdkmanager: $sdkmanager_bin"
+          installed="$("$sdkmanager_bin" --list_installed 2>/dev/null || true)"
+          missing=""
+          for package in 'platforms;android-36' 'platforms;android-35' 'build-tools;36.0.0'; do
+            if ! grep -qF "\"$package\"" <<<"$installed"; then missing="$missing $package"; fi
+          done
+          if [ -z "$missing" ]; then
+            echo "必需组件已预装，跳过安装"
+            exit 0
+          fi
+          echo "缺失组件:$missing，开始安装"
+          if [ ! -w "$sdk_root" ]; then
+            echo "::error::$sdk_root 不可写，无法安装$missing（需要预装或改用可写 sdk_root）"
+            exit 1
+          fi
+          "$sdkmanager_bin" --sdk_root="$sdk_root" $missing </dev/null
       - name: Install FFmpeg for worker integration tests
         run: sudo apt-get update && sudo apt-get install -y ffmpeg
       - name: Go, Flutter and native Android checks
