@@ -100,7 +100,24 @@ class PagedItems extends ChangeNotifier {
       _offset = offset;
       total = count;
     } catch (e) {
-      if (!_disposed && generation == _generation) error = friendlyError(e);
+      if (!_disposed && generation == _generation) {
+        error = friendlyError(e);
+        // A failed refresh should not blank the cached first page; fall back
+        // to local filtering until the server is reachable again.
+        if (replace && source.isNotEmpty) {
+          final needle = (query['search'] ?? '').toLowerCase();
+          final matched =
+              source.where((item) {
+                if (needle.isEmpty || item is! Map) return needle.isEmpty;
+                return '${item['title'] ?? ''} ${item['description'] ?? ''}'
+                    .toLowerCase()
+                    .contains(needle);
+              }).toList();
+          items = matched.take(pageSize).toList();
+          total = matched.length;
+          _offset = items.length;
+        }
+      }
     } finally {
       if (!_disposed && generation == _generation) {
         loading = false;

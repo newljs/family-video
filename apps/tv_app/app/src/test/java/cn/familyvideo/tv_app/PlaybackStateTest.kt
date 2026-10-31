@@ -141,4 +141,24 @@ class PlaybackStateTest {
         }
         assertEquals(512, count)
     }
+
+    @Test fun serverDayOverridesLocalDateAndSealsOldEvent() {
+        val ledger = WatchLedger()
+        ledger.start("a", 0, 0, "2026-01-01")
+        ledger.sample(0, 0, true)
+        ledger.sample(1000, 1000, true)
+        ledger.useDay("2026-01-02")
+        ledger.sample(2000, 2000, true)
+        ledger.seal()
+        assertEquals(listOf("2026-01-01", "2026-01-02"), ledger.batch().map { it.day })
+    }
+
+    @Test fun completedVideosAreHiddenFromAllVideosButKeptInCuratedChannels() {
+        val done = Video("b", "B", "http://server/b", completed = true)
+        val queue = PlaybackQueue()
+        queue.applyCatalog(Catalog(listOf(a, done, c), listOf(Channel("ch", "合集", listOf(done, a)))))
+        assertEquals(setOf("a", "c"), queue.items(false, "").map { it.id }.toSet())
+        queue.channelId = "ch"
+        assertEquals(listOf("b", "a"), queue.items(false, "").map { it.id })
+    }
 }

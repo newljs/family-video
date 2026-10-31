@@ -22,7 +22,9 @@ class TimeBudget extends ChangeNotifier {
   int watchedMsToday = 0;
   String afterLimitCollectionId = '';
   String day = _today();
+  String _localDay = _today();
   int _unsavedSpends = 0;
+  bool _synced = false;
 
   bool get limited => limitMinutes > 0;
   bool get exhausted => limited && remainingMs <= 0;
@@ -39,7 +41,9 @@ class TimeBudget extends ChangeNotifier {
     watchedMsToday = 0;
     afterLimitCollectionId = '';
     day = _today();
+    _localDay = _today();
     _unsavedSpends = 0;
+    _synced = false;
     notifyListeners();
   }
 
@@ -60,6 +64,8 @@ class TimeBudget extends ChangeNotifier {
               ? (saved['watched_ms'] as num?)?.toInt() ?? 0
               : 0;
       day = _today();
+      _localDay = _today();
+      _synced = false;
       notifyListeners();
     } catch (_) {
       /* 缓存损坏按未设置处理，不影响播放。 */
@@ -88,6 +94,7 @@ class TimeBudget extends ChangeNotifier {
   void apply(Map<dynamic, dynamic> data) {
     final nextDay = '${data['day']}';
     final serverWatched = (data['watched_ms_today'] as num?)?.toInt() ?? 0;
+    _synced = true;
     if (nextDay != day) {
       day = nextDay;
       watchedMsToday = serverWatched;
@@ -110,14 +117,22 @@ class TimeBudget extends ChangeNotifier {
     notifyListeners();
   }
 
-  /// 换天检测：本地日期前进后额度重新开始。
+  /// 换天检测：拿到服务端日期后以服务端为准，避免设备时区/时钟造成错位；
+  /// 仅在尚未成功同步时按本地日期做离线兜底。
   void tick() {
     final now = _today();
-    if (now == day) return;
-    day = now;
-    watchedMsToday = 0;
-    notifyListeners();
-    _cache();
+    if (now == _localDay) return;
+    final previous = _localDay;
+    _localDay = now;
+    if (!_synced || day == previous) {
+      // 同一时区的正常换天；服务端日期不同（时区错位）时改为向服务端确认。
+      day = now;
+      watchedMsToday = 0;
+      notifyListeners();
+      _cache();
+      return;
+    }
+    unawaited(load());
   }
 
   Future<void> _cache() async {

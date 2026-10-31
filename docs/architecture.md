@@ -11,7 +11,7 @@ HTTP 和 worker 共用进程，OS 文件锁阻止第二个 worker。先监听端
 
 - `server/cmd/family-video/main.go`：启动、监听和退出。
 - `server/internal/family/config.go`：环境配置、内部签名兼容。
-- `store.go / schema.sql / migrations.go`：schema v3–v6、v1/v2 快照及事务迁移。
+- `store.go / schema.sql / migrations.go`：schema v3–v7、v1/v2/v6 快照及事务迁移。
 - `http.go / manage.go`：目录、导入、上传、任务、合集和 Range。
 - `watch.go / timelimit.go`：观看统计上报、每日时长限额与按天用量。
 - `worker.go`：任务领取、重试调度、FFmpeg、原子入库、取消和恢复。
@@ -26,7 +26,7 @@ HTTP 和 worker 共用进程，OS 文件锁阻止第二个 worker。先监听端
 
 视频检查、处理、封面全部完成后，在事务中插入视频并标记任务 completed，儿童即可访问。失败或未完成文件不进入目录。审核和发布操作已移除；旧 published 列只为兼容保留，不参与过滤，旧客户端修改该字段也不会隐藏视频。
 
-v1/v2 升级前通过 VACUUM INTO 保存包含已提交 WAL 状态的快照，再事务增加任务阶段、字节、重试时间和错误分类字段，并将原有视频设为可见。备份失败中止，未来 schema 版本拒绝降级打开。
+v1/v2 升级前通过 VACUUM INTO 保存包含已提交 WAL 状态的快照，再事务增加任务阶段、字节、重试时间和错误分类字段，并将原有视频设为可见。v3–v5 升级生成 `before-v6-*`；v6 升级生成 `before-v7-*` 并建立按客户端观看表。备份失败中止，未来 schema 版本拒绝降级打开。
 
 业务数据位于 runtime/database/family.sqlite3。credentials.json 仅需自动生成的 signing_key，旧 admin_key 被忽略。媒体 HMAC 格式兼容，http.ServeContent 支持 Range。上传流式写入数据目录，不在系统临时目录缓存完整请求体。
 
@@ -38,11 +38,19 @@ queued→running→completed/failed；queued/running/failed 可取消。瞬态�
 
 阶段包括 cached、resolving、downloading、inspecting、processing、thumbnail。downloading 返回真实字节，总长度未知时显示不定进度；FFmpeg 不伪造百分比。服务停止恢复 queued，已取消任务不被覆盖。
 
+## 按客户端观看数据（schema v7）
+
+儿童端与 TV 在请求头携带 `X-Family-Client-Id`（客户端公开提示，不是认证）。`/api/watch` 同时写入全局 `watch_stats/watch_days/watch_events` 和按客户端的 `client_watch_stats/client_watch_days/client_watch_events`；`/api/videos`、`/api/settings/time-limit` 与安静模式对儿童角色使用该客户端的统计，家长/管理台继续使用全局聚合。
+
+儿童端安装 ID 在 SharedPreferences 中生成一次；TV 使用系统 `ANDROID_ID`（不落盘），因此 TV 仍不保存目录/历史/媒体缓存。客户端已看完的视频不进入推荐流；当该客户端完成当前库内全部视频时，服务端把该客户端的 `plays/completed` 清零但保留已看时长，下一次目录请求会让视频重新成为未看。
+
 ## API v0.7
 
 GET /health、GET /api/me、POST /api/imports、POST /api/uploads、GET /api/tasks、POST /api/tasks/{id}/retry、POST /api/tasks/{id}/cancel、GET /api/videos、PATCH /api/videos/{id}、DELETE /api/videos/{id}、GET /api/collections、POST /api/collections、PUT /api/collections/{id}、DELETE /api/collections/{id}、GET /media/{id}/{resource}。
 
 后续版本增加：POST /api/watch（儿童观看统计批量上报，响应携带每日额度）、GET /api/settings/time-limit（儿童与家长读取限额、今日已看与安静模式合集）、PUT /api/settings/time-limit（仅家长，0–720 分钟，0 为不限制，可指定额度用完后的可见合集）等。
+
+v0.9/v0.9.2 管理台与发布接口：GET /api/system、GET|PUT /api/config/douyin、POST /api/config/douyin/test、GET /api/apps、GET /api/apps/{app}/download、GET /api/update/{app}、GET /api/library、GET /api/library/meta、GET /api/server-addresses、GET /qrcode；局域网发现使用 UDP 8766。管理台请求携带 `X-Family-Client: parent`，避免额度耗尽时被儿童角色的安静模式过滤。
 
 时长额度用完后服务端进入安静模式：对儿童角色的目录与合集查询按指定合集过滤（未指定则返回空），不做任何提示；家长角色不受影响。儿童端本地预算同步收缩推荐流与各页签，当前播放经已签发地址自然播完。
 
@@ -58,11 +66,11 @@ F2 算法不复制入业务代码，固定上游提交及依赖隔离安装。Py
 
 Go 下载候选源，失败后重新解析一次；429 不立即轮询。连接和重定向校验地址，禁用环境代理，拨号只连验证过的公网 IP。单文件最多 2GB，先检查磁盘空间，失败文件删除。
 
-原始视频经 ffprobe 确认视频轨后可缓存，读取校验大小和 SHA-256；24 小时有效，单文件 256MiB、有效缓存总额 512MiB。转码失败重试可复用；网络中断从头获取。缓存按来源链接摘要索引，尚无跨分享链接作品 ID 去重。
+原始视频经 ffprobe 确认视频轨后可缓存，读取校验大小和 SHA-256；24 小时有效，单文件 256MiB、有效缓存总额 512MiB。转码失败重试可复用；网络中断从头获取。缓存按来源链接摘要索引；v0.9 起 worker 另用平台作品 ID（`video_sources`）去重，不同分享链接可复用同一视频。
 
 ## 客户端
 
-`apps/tv_app` 是独立 Kotlin 原生 TV 客户端（API 21+），使用单个 Media3 1.5.1 ExoPlayer + SurfaceView，复用 Go 的儿童角色目录、合集、MP4 Range、时长上报和 UDP 发现协议。播放器使用显式 MP4 extractors 与 HTTP 数据源，不接入 Flutter 的磁盘缓存 fork；客户端无数据库、目录快照、偏好或离线视频。观看事件保存在有界内存队列中，稳定 ID 支持当前进程内重试去重；进程丢失时未上报事件不保留。退后台释放播放器，回前台同步规则并从头恢复当前条目。已播放期间的列表刷新不替换当前 MediaItem，额度耗尽在下一条选片时切至安静合集。详情见 [TV 使用说明](../apps/tv_app/README.md)。
+`apps/tv_app` 是独立 Kotlin 原生 TV 客户端（API 21+），使用单个 Media3 1.5.1 ExoPlayer + SurfaceView，复用 Go 的儿童角色目录、合集、MP4 Range、时长上报和 UDP 发现协议。播放器使用显式 MP4 extractors 与 HTTP 数据源，不接入 Flutter 的磁盘缓存 fork；客户端无数据库、目录快照、偏好或离线视频。观看事件保存在有界内存队列中，稳定 ID 支持当前进程内重试去重；进程丢失时未上报事件不保留。退后台释放播放器，回前台同步规则并从头恢复当前条目。已播放期间的列表刷新不替换当前 MediaItem，额度耗尽在下一条选片时切至安静合集；目录刷新失败或恢复中不接受旧目录换片。TV 0.2 在每次进程启动后的首次目录上随机“全部视频”顺序，刷新时保留会话顺序并追加新内容；已看完视频不进入全部视频队列，使用系统 `ANDROID_ID` 区分客户端统计。详情见 [TV 使用说明](../apps/tv_app/README.md)。
 
 
 家长端没有审核、发布或下架开关。完整刷新成功后替换数据，失败保留原目录。儿童 Stack 占满区域，导航叠加，横竖视频居中；搜索路由暂停首页并保存返回时的播放意图。离线和喜欢仍在设备本地，旧数据兼容。其余能力见 roadmap。

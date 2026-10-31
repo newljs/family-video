@@ -35,16 +35,20 @@ func derror(code, message string, retry bool) error {
 	return &downloadError{Code: code, Message: message, Retryable: retry}
 }
 
+func (a *App) downloaderPythonPath() string {
+	if a.Config.ResolverPython != "" {
+		return a.Config.ResolverPython
+	}
+	name := "python"
+	if runtime.GOOS == "windows" {
+		name += ".exe"
+	}
+	return filepath.Join(filepath.Dir(a.Config.F2Exe), name)
+}
+
 func (a *App) resolveF2(ctx context.Context, source string) (resolvedVideo, error) {
 	var video resolvedVideo
-	python := a.Config.ResolverPython
-	if python == "" {
-		name := "python"
-		if runtime.GOOS == "windows" {
-			name += ".exe"
-		}
-		python = filepath.Join(filepath.Dir(a.Config.F2Exe), name)
-	}
+	python := a.downloaderPythonPath()
 	script := filepath.Join(a.Config.Root, "server", "downloader", "resolve.py")
 	if _, err := os.Stat(python); err != nil {
 		return video, derror("setup_required", "下载器未安装，请运行 scripts/setup-downloader.ps1", false)

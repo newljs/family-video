@@ -5,7 +5,7 @@ import java.util.Date
 import java.util.Locale
 import java.util.UUID
 
-data class Video(val id: String, val title: String, val url: String)
+data class Video(val id: String, val title: String, val url: String, val completed: Boolean = false)
 data class Channel(val id: String, val title: String, val videos: List<Video>)
 data class Catalog(val videos: List<Video>, val channels: List<Channel>)
 data class WatchEvent(
@@ -23,11 +23,28 @@ class PlaybackQueue {
     var channelId = ""
     var currentId = ""
     val failed = mutableSetOf<String>()
+    private var ordered = false
+
+    /** Shuffle on first catalog of this app run, then keep session order and append new items. */
+    fun applyCatalog(next: Catalog) {
+        if (!ordered) {
+            val shuffled = next.videos.toMutableList()
+            shuffled.shuffle()
+            catalog = next.copy(videos = shuffled)
+            ordered = true
+            return
+        }
+        val byId = next.videos.associateBy { it.id }
+        val kept = catalog.videos.mapNotNull { byId[it.id] }.toMutableList()
+        val known = kept.map { it.id }.toSet()
+        kept += next.videos.filterNot { it.id in known }.shuffled()
+        catalog = next.copy(videos = kept)
+    }
 
     private fun source(quiet: Boolean, quietChannel: String): List<Video> =
         if (quiet) {
             catalog.channels.firstOrNull { it.id == quietChannel }?.videos ?: emptyList()
-        } else if (channelId.isEmpty()) catalog.videos
+        } else if (channelId.isEmpty()) catalog.videos.filterNot { it.completed }
         else catalog.channels.firstOrNull { it.id == channelId }?.videos ?: emptyList()
 
     fun items(quiet: Boolean, quietChannel: String): List<Video> =
@@ -69,7 +86,7 @@ class WatchLedger {
         fun today(): String = SimpleDateFormat("yyyy-MM-dd", Locale.US).format(Date())
     }
 
-    fun start(id: String, now: Long, position: Long = 0) {
+    fun start(id: String, now: Long, position: Long = 0, date: String = today()) {
         seal()
         videoId = id
         sampleTime = now
@@ -78,7 +95,14 @@ class WatchLedger {
         played = false
         milliseconds = 0
         totalMilliseconds = 0
-        day = today()
+        day = date
+    }
+
+    /** Server day is authoritative; seal the old event when the server day advances. */
+    fun useDay(date: String) {
+        if (date.isEmpty() || date == day) return
+        seal()
+        day = date
     }
 
     fun rebase(now: Long, position: Long) {
@@ -87,11 +111,7 @@ class WatchLedger {
         samplePlaying = false
     }
 
-    fun sample(now: Long, position: Long, isPlaying: Boolean, date: String = today()): Long {
-        if (date != day) {
-            seal()
-            day = date
-        }
+    fun sample(now: Long, position: Long, isPlaying: Boolean): Long {
         val elapsed = now - sampleTime
         val advanced = position - samplePosition
         val counted = if (videoId.isNotEmpty() && samplePlaying && elapsed in 1..2500 &&

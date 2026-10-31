@@ -87,7 +87,11 @@ func (a *App) transfer(ctx context.Context, raw string, headers map[string]strin
 	if err = validateSource(u); err != nil {
 		return err
 	}
-	req, _ := http.NewRequestWithContext(ctx, "GET", raw, nil)
+	// Cancel a stalled body read instead of holding the single worker for the
+	// whole task budget when a CDN stops sending bytes.
+	stallCtx, stallCancel := context.WithCancel(ctx)
+	defer stallCancel()
+	req, _ := http.NewRequestWithContext(stallCtx, "GET", raw, nil)
 	// Request only browser identity/origin metadata, never forward account cookies
 	// to CDN hosts. Each attempt uses a newly resolved URL and starts at byte zero.
 	for _, key := range []string{"User-Agent", "Referer"} {
@@ -153,8 +157,11 @@ func (a *App) transfer(ctx context.Context, raw string, headers map[string]strin
 	a.progress(ctx, "downloading", 0, max(resp.ContentLength, 0))
 	buffer := make([]byte, 128*1024)
 	reader := io.LimitReader(resp.Body, maxVideoBytes+1)
+	stall := time.AfterFunc(2*time.Minute, stallCancel)
+	defer stall.Stop()
 	for {
 		n, readErr := reader.Read(buffer)
+		stall.Reset(2 * time.Minute)
 		if n > 0 {
 			received += int64(n)
 			if received > maxVideoBytes {
@@ -174,6 +181,9 @@ func (a *App) transfer(ctx context.Context, raw string, headers map[string]strin
 		if readErr != nil {
 			if ctx.Err() != nil {
 				return ctx.Err()
+			}
+			if stallCtx.Err() != nil {
+				return derror("media_network", "视频源长时间没有数据，稍后自动重试", true)
 			}
 			return derror("media_incomplete", "视频传输中断，稍后重新获取完整文件", true)
 		}

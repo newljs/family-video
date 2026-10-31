@@ -113,6 +113,7 @@ class _KidsHomeState extends State<KidsHome> with WidgetsBindingObserver {
   Future<void> restore() async {
     try {
       await api.restore();
+      await api.restoreClientId();
       if (api.server.isNotEmpty) {
         address.text = api.server;
         await restoreServerState();
@@ -361,36 +362,21 @@ class _KidsHomeState extends State<KidsHome> with WidgetsBindingObserver {
         context,
         MaterialPageRoute<void>(
           builder:
-              (_) => StatefulBuilder(
-                builder:
-                    (context, update) => Scaffold(
-                      backgroundColor: Colors.black,
-                      appBar: AppBar(
-                        backgroundColor: Colors.black,
-                        title: const Text('家庭精选'),
-                      ),
-                      body: FeedView(
-                        api: api,
-                        progress: progress,
-                        budget: budget,
-                        items: items,
-                        start: index,
-                        favorites: favorites,
-                        downloaded: downloaded,
-                        onLike: (id) {
-                          toggleFavorite(id);
-                          update(() {});
-                        },
-                        onDownload: (v) async {
-                          await saveVideo(v);
-                          if (context.mounted) update(() {});
-                        },
-                        onCollections: () {
-                          Navigator.pop(context);
-                          showCollections();
-                        },
-                      ),
-                    ),
+              (_) => PreviewFeedPage(
+                api: api,
+                progress: progress,
+                budget: budget,
+                initialItems: items,
+                start: index,
+                favorites: favorites,
+                downloaded: downloaded,
+                quietPool: () => quietPool,
+                onLike: toggleFavorite,
+                onDownload: saveVideo,
+                onCollections: () {
+                  Navigator.pop(context);
+                  showCollections();
+                },
               ),
         ),
       );
@@ -597,16 +583,18 @@ class _KidsHomeState extends State<KidsHome> with WidgetsBindingObserver {
       items = [...current, ...pool.where((v) => seen.add('${v['id']}'))];
     } else {
       final source = List<dynamic>.from(videos.isNotEmpty ? videos : offline);
+      // 已看完的目录内容不再进入推荐流；全部看完后服务端会自动清空已看标记。
+      final pending = unwatchedFeedItems(source);
       // A downloaded clip may be playing before the network catalog arrives.
       // Keep it in the current queue so background sync doesn't cut it off.
       final currentOffline = offline.where(
         (item) => item['id'] == lastRecommendation,
       );
       if (currentOffline.isNotEmpty &&
-          !source.any((item) => item['id'] == lastRecommendation)) {
-        source.insert(0, currentOffline.first);
+          !pending.any((item) => item['id'] == lastRecommendation)) {
+        pending.insert(0, currentOffline.first);
       }
-      items = order.arrange(source);
+      items = order.arrange(pending);
     }
     if (items.isEmpty) {
       if (busy || sync.syncing) {
@@ -986,5 +974,132 @@ class _KidsHomeState extends State<KidsHome> with WidgetsBindingObserver {
       builder: (_) => KidsSearchSheet(videos: availableVideos),
     );
     if (selected != null && mounted) await play([selected]);
+  }
+}
+
+/// 推荐流不推送该客户端已看完的视频；全部看完后由服务端重置已看标记。
+List<dynamic> unwatchedFeedItems(List<dynamic> videos) =>
+    videos
+        .where((item) => ((item['completed_count'] as num?)?.toInt() ?? 0) == 0)
+        .toList();
+
+/// 安静模式下预览页可见的内容：当前视频自然播完，其余只剩家长指定合集。
+List<dynamic> previewFeedItems({
+  required List<dynamic> initial,
+  required String? currentId,
+  required List<dynamic> quietPool,
+  required bool exhausted,
+}) {
+  if (!exhausted) return List<dynamic>.of(initial);
+  final result = <dynamic>[];
+  final seen = <String>{};
+  if (currentId != null && currentId.isNotEmpty) {
+    for (final item in initial) {
+      if ('${item['id']}' == currentId) {
+        result.add(item);
+        seen.add(currentId);
+        break;
+      }
+    }
+  }
+  for (final item in quietPool) {
+    final id = '${item['id']}';
+    if (seen.add(id)) result.add(item);
+  }
+  return result;
+}
+
+class PreviewFeedPage extends StatefulWidget {
+  final FamilyApi api;
+  final PlaybackProgress progress;
+  final TimeBudget budget;
+  final List<dynamic> initialItems;
+  final int start;
+  final Set<String> favorites, downloaded;
+  final List<dynamic> Function() quietPool;
+  final ValueChanged<String> onLike;
+  final Future<void> Function(Map<String, dynamic>) onDownload;
+  final VoidCallback onCollections;
+  const PreviewFeedPage({
+    super.key,
+    required this.api,
+    required this.progress,
+    required this.budget,
+    required this.initialItems,
+    required this.start,
+    required this.favorites,
+    required this.downloaded,
+    required this.quietPool,
+    required this.onLike,
+    required this.onDownload,
+    required this.onCollections,
+  });
+  @override
+  State<PreviewFeedPage> createState() => _PreviewFeedPageState();
+}
+
+class _PreviewFeedPageState extends State<PreviewFeedPage> {
+  late final Set<String> favorites = Set<String>.of(widget.favorites);
+  late final Set<String> downloaded = Set<String>.of(widget.downloaded);
+  late String? currentId = '${widget.initialItems[widget.start]['id']}';
+  late List<dynamic> items = _currentItems();
+
+  @override
+  void initState() {
+    super.initState();
+    widget.budget.addListener(_onBudgetChanged);
+  }
+
+  void _onBudgetChanged() {
+    if (!mounted) return;
+    setState(() => items = _currentItems());
+  }
+
+  List<dynamic> _currentItems() => previewFeedItems(
+    initial: widget.initialItems,
+    currentId: currentId,
+    quietPool: widget.quietPool(),
+    exhausted: widget.budget.exhausted,
+  );
+
+  @override
+  void dispose() {
+    widget.budget.removeListener(_onBudgetChanged);
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final feedItems = items;
+    final start =
+        widget.start < feedItems.length ? widget.start : feedItems.length - 1;
+    return Scaffold(
+      backgroundColor: Colors.black,
+      appBar: AppBar(backgroundColor: Colors.black, title: const Text('家庭精选')),
+      body:
+          feedItems.isEmpty
+              ? const SizedBox.expand()
+              : FeedView(
+                api: widget.api,
+                progress: widget.progress,
+                budget: widget.budget,
+                items: feedItems,
+                start: start < 0 ? 0 : start,
+                favorites: favorites,
+                downloaded: downloaded,
+                onVideoChanged: (id) => currentId = id,
+                onLike: (id) {
+                  widget.onLike(id);
+                  setState(() {
+                    if (!favorites.add(id)) favorites.remove(id);
+                  });
+                },
+                onDownload: (v) async {
+                  await widget.onDownload(v);
+                  if (mounted) setState(() => downloaded.add('${v['id']}'));
+                },
+                onCollections: widget.onCollections,
+              ),
+    );
   }
 }

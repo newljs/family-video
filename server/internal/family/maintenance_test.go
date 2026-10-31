@@ -121,3 +121,56 @@ func TestDailySnapshotAndOrphanQuarantine(t *testing.T) {
 		t.Fatal("referenced video moved")
 	}
 }
+
+func TestStaleTempCleanupKeepsActiveTasksAndRecentFailures(t *testing.T) {
+	a := testApp(t)
+	root := filepath.Join(a.Config.Data, "temp")
+	old := time.Now().Add(-tempRetention - time.Hour)
+	makeDir := func(name string) string {
+		dir := filepath.Join(root, name)
+		if err := os.MkdirAll(dir, 0700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(dir, "source.mp4"), []byte("x"), 0600); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Chtimes(dir, old, old); err != nil {
+			t.Fatal(err)
+		}
+		return dir
+	}
+	queued, failed, unknown := ID(), ID(), ID()
+	for _, item := range []struct{ id, state string }{{queued, "queued"}, {failed, "failed"}} {
+		if _, err := a.DB.Exec("INSERT INTO tasks(id,source,title,kind,state) VALUES(?,?,?,?,?)", item.id, "source-"+item.id, "t", "douyin", item.state); err != nil {
+			t.Fatal(err)
+		}
+	}
+	queuedDir := makeDir(queued)
+	failedDir := makeDir(failed)
+	unknownDir := makeDir(unknown)
+	streamDir := makeDir("stream-interrupted")
+	freshDir := makeDir(ID())
+	if err := os.Chtimes(freshDir, time.Now(), time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	upload := filepath.Join(root, failed+".mp4")
+	if err := os.WriteFile(upload, []byte("upload"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chtimes(upload, old, old); err != nil {
+		t.Fatal(err)
+	}
+
+	a.cleanupStaleTemp()
+
+	for _, dir := range []string{queuedDir, freshDir} {
+		if _, err := os.Stat(dir); err != nil {
+			t.Fatalf("active/recent temp removed: %s: %v", dir, err)
+		}
+	}
+	for _, path := range []string{failedDir, unknownDir, streamDir, upload} {
+		if _, err := os.Stat(path); !os.IsNotExist(err) {
+			t.Fatalf("stale temp retained: %s (%v)", path, err)
+		}
+	}
+}

@@ -71,3 +71,27 @@ CREATE TABLE IF NOT EXISTS video_tags (
  tag TEXT NOT NULL, PRIMARY KEY(video_id, tag)
 );
 CREATE INDEX IF NOT EXISTS video_tags_tag ON video_tags(tag, video_id);
+CREATE TABLE IF NOT EXISTS client_watch_stats (
+ client_id TEXT NOT NULL,
+ video_id TEXT NOT NULL REFERENCES videos(id) ON DELETE CASCADE,
+ plays INTEGER NOT NULL DEFAULT 0,
+ watched_ms INTEGER NOT NULL DEFAULT 0,
+ completed INTEGER NOT NULL DEFAULT 0,
+ last_watched_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+ PRIMARY KEY(client_id, video_id)
+);
+CREATE INDEX IF NOT EXISTS client_watch_completed ON client_watch_stats(client_id, completed);
+CREATE TABLE IF NOT EXISTS client_watch_days (
+ client_id TEXT NOT NULL,
+ day TEXT NOT NULL,
+ watched_ms INTEGER NOT NULL DEFAULT 0,
+ updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+ PRIMARY KEY(client_id, day)
+);
+CREATE TABLE IF NOT EXISTS client_watch_events (
+ client_id TEXT NOT NULL,
+ event_id TEXT NOT NULL,
+ day TEXT NOT NULL,
+ PRIMARY KEY(client_id, event_id)
+);
+CREATE INDEX IF NOT EXISTS client_watch_events_day ON client_watch_events(client_id, day);

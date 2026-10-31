@@ -35,7 +35,7 @@ func (a *App) StartWorker(ctx context.Context) (func(), error) {
 	go func() {
 		defer close(done)
 		defer lock.Unlock()
-		var lastMaintenance time.Time
+		var lastMaintenance, lastTempSweep time.Time
 		for ctx.Err() == nil {
 			worked, e := a.RunOnce(ctx)
 			if e != nil {
@@ -47,6 +47,10 @@ func (a *App) StartWorker(ctx context.Context) (func(), error) {
 					if err := a.dailySnapshot(); err != nil {
 						log.Printf("database snapshot: %v", err)
 					}
+				}
+				if time.Since(lastTempSweep) >= time.Hour {
+					lastTempSweep = time.Now()
+					a.cleanupStaleTemp()
 				}
 				a.mediaMu.Lock()
 				a.cleanupDeleted()
@@ -318,6 +322,10 @@ func (a *App) RunOnce(ctx context.Context) (bool, error) {
 		}
 		if savedState == "cancelled" {
 			a.cleanupImport(id, kind)
+		} else if state == "failed" && kind != "upload" {
+			// A terminal Douyin failure can be retried from scratch; keeping its
+			// downloaded temp copy would otherwise leak up to 2 GiB per task.
+			os.RemoveAll(folder)
 		}
 		return true, err
 	}

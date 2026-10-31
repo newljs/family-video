@@ -49,6 +49,7 @@ class FakePlayer extends VideoPlayerPlatform {
   Future<void> pause(int playerId) async {
     pauses.add(StackTrace.current);
   }
+
   @override
   Future<Duration> getPosition(int playerId) async => Duration.zero;
   @override
@@ -151,5 +152,37 @@ void main() {
     expect(find.byType(FeedView), findsNothing);
     expect(find.byType(KidsEmptyState), findsOneWidget);
     expect(find.text('今天的时间看完啦'), findsNothing);
+  });
+
+  test('已看完的视频不进入推荐流', () {
+    final items = [
+      {'id': 'unseen', 'completed_count': 0},
+      {'id': 'seen', 'completed_count': 1},
+      {'id': 'old-server', 'plays': 2},
+    ];
+    expect(unwatchedFeedItems(items).map((v) => '${v['id']}').toList(), [
+      'unseen',
+      'old-server',
+    ]);
+  });
+
+  test('预览页在额度用完后只保留当前视频和指定合集', () {
+    final initial = [...ordinary, ...designated];
+    final shrunk = previewFeedItems(
+      initial: initial,
+      currentId: 'v2',
+      quietPool: designated,
+      exhausted: true,
+    );
+    expect(shrunk.map((v) => '${v['id']}').toList(), ['v2', 'd1', 'd2']);
+    expect(
+      previewFeedItems(
+        initial: initial,
+        currentId: 'v2',
+        quietPool: designated,
+        exhausted: false,
+      ).length,
+      4,
+    );
   });
 }

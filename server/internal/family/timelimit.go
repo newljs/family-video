@@ -40,10 +40,21 @@ func (a *App) afterLimitCollection() (string, error) {
 }
 
 // watchBudget 返回今日额度视图：限额、今天已看毫秒数、日期与额度状态。
-func watchBudget(db *sql.DB, limit int, afterLimit string) map[string]any {
+// 传入客户端 ID 时使用该客户端独立的观看天数，否则回退到全局统计。
+func watchBudget(db *sql.DB, limit int, afterLimit string, clients ...string) map[string]any {
+	client := ""
+	if len(clients) > 0 {
+		client = clients[0]
+	}
 	var watched int64
 	day := today()
-	if err := db.QueryRow("SELECT watched_ms FROM watch_days WHERE day=?", day).Scan(&watched); err != nil && !errors.Is(err, sql.ErrNoRows) {
+	var err error
+	if client != "" {
+		err = db.QueryRow("SELECT watched_ms FROM client_watch_days WHERE client_id=? AND day=?", client, day).Scan(&watched)
+	} else {
+		err = db.QueryRow("SELECT watched_ms FROM watch_days WHERE day=?", day).Scan(&watched)
+	}
+	if err != nil && !errors.Is(err, sql.ErrNoRows) {
 		return map[string]any{"limit_minutes": limit, "watched_ms_today": 0, "day": day, "after_limit_collection_id": afterLimit, "exhausted": false}
 	}
 	return map[string]any{
@@ -55,7 +66,7 @@ func watchBudget(db *sql.DB, limit int, afterLimit string) map[string]any {
 	}
 }
 
-func (a *App) timeLimit(w http.ResponseWriter, r *http.Request, _ string) error {
+func (a *App) timeLimit(w http.ResponseWriter, r *http.Request, role string) error {
 	limit, err := a.timeLimitMinutes()
 	if err != nil {
 		return err
@@ -64,7 +75,7 @@ func (a *App) timeLimit(w http.ResponseWriter, r *http.Request, _ string) error 
 	if err != nil {
 		return err
 	}
-	reply(w, 200, watchBudget(a.DB, limit, afterLimit))
+	reply(w, 200, watchBudget(a.DB, limit, afterLimit, childClient(r, role)))
 	return nil
 }
 
@@ -104,19 +115,29 @@ ON CONFLICT(key) DO UPDATE SET value=excluded.value`, afterLimitKey, b.AfterLimi
 }
 
 // quietState 报告安静模式：当日限额用完即激活。collectionID 为家长指定的
-// 合集，可为空（此时儿童端目录整体隐藏）。
-func (a *App) quietState() (active bool, collectionID string, err error) {
+// 合集，可为空（此时儿童端目录整体隐藏）。客户端 ID 非空时按该客户端统计。
+func (a *App) quietState(clients ...string) (active bool, collectionID string, err error) {
 	limit, err := a.timeLimitMinutes()
 	if err != nil || limit <= 0 {
 		return false, "", err
 	}
+	client := ""
+	if len(clients) > 0 {
+		client = clients[0]
+	}
 	var watched int64
 	day := today()
-	if err := a.DB.QueryRow("SELECT watched_ms FROM watch_days WHERE day=?", day).Scan(&watched); err != nil {
-		if errors.Is(err, sql.ErrNoRows) {
+	var scanErr error
+	if client != "" {
+		scanErr = a.DB.QueryRow("SELECT watched_ms FROM client_watch_days WHERE client_id=? AND day=?", client, day).Scan(&watched)
+	} else {
+		scanErr = a.DB.QueryRow("SELECT watched_ms FROM watch_days WHERE day=?", day).Scan(&watched)
+	}
+	if scanErr != nil {
+		if errors.Is(scanErr, sql.ErrNoRows) {
 			return false, "", nil
 		}
-		return false, "", err
+		return false, "", scanErr
 	}
 	if watched < int64(limit)*60000 {
 		return false, "", nil

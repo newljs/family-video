@@ -1,6 +1,7 @@
 import 'dart:convert';
 import 'dart:async';
 import 'dart:io';
+import 'dart:math';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:http/http.dart' as http;
 import 'package:http/io_client.dart';
@@ -73,13 +74,35 @@ class FamilyApi {
     : _client = client ?? _createClient(),
       _ownsClient = client == null;
   String server = '';
+  // Installation-scoped public hint for per-client watch stats/quota.
+  String clientId = '';
   // Retained only to find pre-0.4 offline files and favorites. Never transmitted.
   String token = '';
   String _healthServer = '';
   DateTime? _healthAt;
   static const _healthTTL = Duration(minutes: 5);
   static const _storage = FlutterSecureStorage();
-  Map<String, String> get headers => {'X-Family-Client': clientRole};
+  Map<String, String> get headers => {
+    'X-Family-Client': clientRole,
+    if (clientId.isNotEmpty) 'X-Family-Client-Id': clientId,
+  };
+
+  /// Stable per-install ID; created lazily and stored with the app's settings.
+  Future<void> restoreClientId() async {
+    final prefs = await SharedPreferences.getInstance();
+    var id = prefs.getString('family_client_id') ?? '';
+    if (!RegExp(r'^[A-Za-z0-9_-]{1,64}$').hasMatch(id)) {
+      final random = Random.secure();
+      id =
+          List.generate(
+            16,
+            (_) => random.nextInt(256).toRadixString(16).padLeft(2, '0'),
+          ).join();
+      await prefs.setString('family_client_id', id);
+    }
+    clientId = id;
+  }
+
   Uri uri(String path) => Uri.parse('$server$path');
   void dispose() {
     if (_ownsClient) _client.close();

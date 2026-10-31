@@ -6,7 +6,11 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strings"
+	"time"
 )
+
+const tempRetention = 7 * 24 * time.Hour
 
 func (a *App) cancelImport(w http.ResponseWriter, r *http.Request, _ string) error {
 	id := r.PathValue("id")
@@ -47,20 +51,64 @@ func (a *App) cancelImport(w http.ResponseWriter, r *http.Request, _ string) err
 	return nil
 }
 
-func (a *App) cleanupImport(id, kind string) {
-	// Only generated task IDs may be used as local cleanup paths.
+func validTaskID(id string) bool {
 	if len(id) != 32 || filepath.Base(id) != id {
-		return
+		return false
 	}
 	for _, c := range id {
 		if !((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f')) {
-			return
+			return false
 		}
+	}
+	return true
+}
+
+func (a *App) cleanupImport(id, kind string) {
+	// Only generated task IDs may be used as local cleanup paths.
+	if !validTaskID(id) {
+		return
 	}
 	if kind == "upload" {
 		os.Remove(filepath.Join(a.Config.Data, "temp", id+".mp4"))
 	}
 	os.RemoveAll(filepath.Join(a.Config.Data, "temp", id))
+}
+
+// cleanupStaleTemp removes abandoned task temp files and interrupted HLS pack
+// directories. Active tasks and recent failed uploads (which still support a
+// manual retry) are kept.
+func (a *App) cleanupStaleTemp() {
+	root := filepath.Join(a.Config.Data, "temp")
+	entries, err := os.ReadDir(root)
+	if err != nil {
+		return
+	}
+	cutoff := time.Now().Add(-tempRetention)
+	for _, entry := range entries {
+		info, err := entry.Info()
+		if err != nil || info.ModTime().After(cutoff) {
+			continue
+		}
+		name := entry.Name()
+		if strings.HasPrefix(name, "stream-") {
+			os.RemoveAll(filepath.Join(root, name))
+			continue
+		}
+		id := strings.TrimSuffix(name, ".mp4")
+		if !validTaskID(id) {
+			continue
+		}
+		var state string
+		err = a.DB.QueryRow("SELECT state FROM tasks WHERE id=?", id).Scan(&state)
+		if errors.Is(err, sql.ErrNoRows) {
+			os.RemoveAll(filepath.Join(root, name))
+			continue
+		}
+		if err != nil || state == "queued" || state == "running" {
+			continue
+		}
+		os.RemoveAll(filepath.Join(root, name))
+	}
 }
 
 func (a *App) updateCollection(w http.ResponseWriter, r *http.Request, _ string) error {

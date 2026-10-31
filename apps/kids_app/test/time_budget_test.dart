@@ -167,4 +167,18 @@ void main() {
     await stale.load();
     expect(stale.limitMinutes, 30);
   });
+
+  test('同步服务端日期后 tick 不再按本地时钟清零', () {
+    final budget = TimeBudget(
+      apiWith(MockClient((r) async => http.Response('{}', 200))),
+    );
+    budget.apply({
+      'limit_minutes': 30,
+      'watched_ms_today': 60000,
+      'day': today(),
+    });
+    budget.spend(1000);
+    budget.tick();
+    expect(budget.watchedMsToday, 61000);
+  });
 }

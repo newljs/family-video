@@ -20,7 +20,7 @@ import (
 //go:embed admin.html
 var adminFiles embed.FS
 
-const serverVersion = "0.9.2"
+const serverVersion = "0.10.0"
 
 // f2ConfigPath 返回生效的抖音下载配置文件路径，与 resolver.go 的读取逻辑一致。
 func (a *App) f2ConfigPath() string {
@@ -43,6 +43,8 @@ func (a *App) adminPage(w http.ResponseWriter, r *http.Request, _ string) error 
 	w.Write(page)
 	return nil
 }
+
+const usageCacheTTL = 30 * time.Second
 
 type dirUsage struct {
 	Name  string `json:"name"`
@@ -79,14 +81,6 @@ func toolAvailable(name string) bool {
 	return err == nil
 }
 
-// downloaderPythonPath 与 resolver.go 的解析逻辑保持一致。
-func (a *App) downloaderPythonPath() string {
-	if a.Config.ResolverPython != "" {
-		return a.Config.ResolverPython
-	}
-	return filepath.Join(filepath.Dir(a.Config.F2Exe), "python")
-}
-
 func (a *App) systemInfo(w http.ResponseWriter, r *http.Request, _ string) error {
 	info := map[string]any{
 		"version":    serverVersion,
@@ -101,15 +95,28 @@ func (a *App) systemInfo(w http.ResponseWriter, r *http.Request, _ string) error
 		info["disk_free_bytes"] = free
 	}
 
-	names := []string{"database", "videos", "thumbnails", "streams", "temp", "download-cache", "backups", "releases", "quarantine"}
-	usages := make([]dirUsage, 0, len(names))
+	// The overview refreshes every 20 seconds; walking every HLS segment each
+	// time is wasteful on a large library.
+	a.usageMu.Lock()
+	var usages []dirUsage
 	var total int64
-	for _, name := range names {
-		u := dirUsageOf(filepath.Join(a.Config.Data, name))
-		total += u.Bytes
-		usages = append(usages, u)
+	if time.Since(a.usageAt) < usageCacheTTL {
+		usages = append([]dirUsage(nil), a.usage...)
+		total = a.usageTotal
+	} else {
+		names := []string{"database", "videos", "thumbnails", "streams", "temp", "download-cache", "backups", "releases", "quarantine"}
+		usages = make([]dirUsage, 0, len(names))
+		for _, name := range names {
+			u := dirUsageOf(filepath.Join(a.Config.Data, name))
+			total += u.Bytes
+			usages = append(usages, u)
+		}
+		sort.Slice(usages, func(i, j int) bool { return usages[i].Bytes > usages[j].Bytes })
+		a.usage = append([]dirUsage(nil), usages...)
+		a.usageTotal = total
+		a.usageAt = time.Now()
 	}
-	sort.Slice(usages, func(i, j int) bool { return usages[i].Bytes > usages[j].Bytes })
+	a.usageMu.Unlock()
 	info["usage"] = usages
 	info["usage_total_bytes"] = total
 

@@ -72,10 +72,16 @@ func (a *App) taskPage(w http.ResponseWriter, r *http.Request) error {
 }
 
 func (a *App) videoPage(w http.ResponseWriter, r *http.Request, role string) error {
-	from := " FROM videos v LEFT JOIN watch_stats s ON s.video_id=v.id WHERE 1=1"
-	args := []any{}
+	client := childClient(r, role)
+	if client != "" {
+		if _, err := a.resetClientIfAllWatched(client); err != nil {
+			return err
+		}
+	}
+	join, args := watchStatsJoin(client)
+	from := " FROM videos v" + join + " WHERE 1=1"
 	if role == "child" {
-		quiet, id, err := a.quietState()
+		quiet, id, err := a.quietState(client)
 		if err != nil {
 			return err
 		}

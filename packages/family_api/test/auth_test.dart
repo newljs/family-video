@@ -39,6 +39,26 @@ void main() {
     },
   );
   test(
+    'a stable client identity is generated once and sent with requests',
+    () async {
+      late String seen;
+      final api = FamilyApi(
+        client: MockClient((r) async {
+          seen = r.headers['X-Family-Client-Id'] ?? '';
+          return http.Response('{}', 200);
+        }),
+      )..server = 'http://home:8765';
+      await api.restoreClientId();
+      expect(api.clientId, matches(RegExp(r'^[a-f0-9]{32}$')));
+      await api.request('GET', '/health');
+      expect(seen, api.clientId);
+      final other = FamilyApi()..server = 'http://home:8765';
+      await other.restoreClientId();
+      expect(other.clientId, api.clientId);
+    },
+  );
+
+  test(
     'old backend is explained and a failed connection preserves saved address',
     () async {
       final api = FamilyApi(

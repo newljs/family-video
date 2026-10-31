@@ -25,6 +25,12 @@ func migrate(db *sql.DB, c Config, version int) error {
 			return fmt.Errorf("升级前备份失败，数据库保持原状: %w", err)
 		}
 	}
+	if version == 6 {
+		backup := filepath.Join(c.Data, "database", "before-v7-"+time.Now().UTC().Format("20060102-150405")+"-"+ID()[:8]+".sqlite3")
+		if _, err := db.Exec("VACUUM INTO ?", backup); err != nil {
+			return fmt.Errorf("升级前备份失败，数据库保持原状: %w", err)
+		}
+	}
 	tx, err := db.Begin()
 	if err != nil {
 		return err
@@ -71,7 +77,7 @@ func migrate(db *sql.DB, c Config, version int) error {
 			return err
 		}
 	}
-	if _, err = tx.Exec("PRAGMA user_version=6"); err != nil {
+	if _, err = tx.Exec("PRAGMA user_version=7"); err != nil {
 		return err
 	}
 	return tx.Commit()

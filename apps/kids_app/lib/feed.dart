@@ -309,6 +309,7 @@ class _FeedViewState extends State<FeedView> with WidgetsBindingObserver {
   void remember() {
     final p = player;
     if (playingId == null || p?.value.isInitialized != true) return;
+    reporter.setServerDay(widget.budget?.day);
     if (!restoringPosition) {
       progress.record(playingId!, p!.value.position, p.value.duration);
       // 计真实经过的观看时长，快进跳跃与倍速不额外扣额度。
@@ -318,7 +319,8 @@ class _FeedViewState extends State<FeedView> with WidgetsBindingObserver {
         position: position,
         playing: p.value.isPlaying && widget.active && appActive,
         buffering: p.value.isBuffering,
-        speed: p.value.playbackSpeed,
+        // 倍速由平台接口直设，controller.value.playbackSpeed 仍为 1。
+        speed: speeding ? 2.0 : 1.0,
       );
       if (delta > Duration.zero) {
         reporter.record(playingId!, watched: delta);
@@ -367,7 +369,20 @@ class _FeedViewState extends State<FeedView> with WidgetsBindingObserver {
   /// 播放绝不中断，让孩子感觉不到额度机制的存在。
   void onBudgetChanged() {
     if (!mounted) return;
+    reporter.setServerDay(widget.budget?.day);
     setState(() {});
+    // 额度耗尽后当前视频应自然播完，而不是无限循环；恢复额度后恢复循环。
+    unawaited(_applyLooping());
+  }
+
+  Future<void> _applyLooping() async {
+    final p = player;
+    if (p == null || !p.value.isInitialized) return;
+    try {
+      await p.setLooping(widget.budget?.exhausted != true);
+    } catch (_) {
+      /* Retained player may be closing. */
+    }
   }
 
   @override
@@ -477,6 +492,8 @@ class _FeedViewState extends State<FeedView> with WidgetsBindingObserver {
       player = current;
       restoringPosition = false;
       current.addListener(observePlayer);
+      // CachedFeedPlayer 初始化时默认循环；安静模式下改为播完停住。
+      await current.setLooping(widget.budget?.exhausted != true);
       if (!blocked && widget.active && appActive) await current.play();
       if (!mounted || epoch != generation) {
         if (!identical(activeEntry, entry) && !entry.closed) {

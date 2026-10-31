@@ -86,6 +86,32 @@ func valid(s string, max int) bool {
 	n := utf8.RuneCountInString(strings.TrimSpace(s))
 	return n > 0 && n <= max
 }
+
+const clientIDHeader = "X-Family-Client-Id"
+
+// clientID is a public installation/device hint used to isolate watch state.
+// It is not authentication; invalid values fall back to the legacy global view.
+func clientID(r *http.Request) string {
+	id := strings.TrimSpace(r.Header.Get(clientIDHeader))
+	if safeClientID.MatchString(id) {
+		return id
+	}
+	return ""
+}
+
+func childClient(r *http.Request, role string) string {
+	if role == "child" {
+		return clientID(r)
+	}
+	return ""
+}
+
+func watchStatsJoin(client string) (string, []any) {
+	if client == "" {
+		return " LEFT JOIN watch_stats s ON s.video_id=v.id", nil
+	}
+	return " LEFT JOIN client_watch_stats s ON s.video_id=v.id AND s.client_id=?", []any{client}
+}
 func (a *App) signature(id, res string, expires int64, role string) string {
 	mac := hmac.New(sha256.New, []byte(a.Config.SigningKey))
 	fmt.Fprintf(mac, "%s:%s:%d:%s", id, res, expires, role)
@@ -155,11 +181,17 @@ func (a *App) Handler() http.Handler {
 		if r.URL.Query().Has("limit") {
 			return a.videoPage(w, r, role)
 		}
+		client := childClient(r, role)
+		if client != "" {
+			if _, err := a.resetClientIfAllWatched(client); err != nil {
+				return err
+			}
+		}
 		// 安静模式：当日额度用完后不做提示，儿童角色的目录静默收缩为
 		// 家长指定的合集；未指定合集时全部隐藏。
 		quiet, quietID := false, ""
 		if role == "child" {
-			if active, id, e := a.quietState(); e != nil {
+			if active, id, e := a.quietState(client); e != nil {
 				return e
 			} else if active {
 				quiet, quietID = true, id
@@ -169,10 +201,10 @@ func (a *App) Handler() http.Handler {
 		if quiet && quietID == "" {
 			items = []map[string]any{}
 		} else {
+			join, args := watchStatsJoin(client)
 			sqlText := `SELECT v.*, IFNULL(s.plays,0) AS plays, IFNULL(s.watched_ms,0) AS watched_ms,
 IFNULL(s.completed,0) AS completed_count, s.last_watched_at
-FROM videos v LEFT JOIN watch_stats s ON s.video_id=v.id`
-			args := []any{}
+FROM videos v` + join
 			if quiet {
 				sqlText += " WHERE v.id IN (SELECT video_id FROM collection_items WHERE collection_id=?)"
 				args = append(args, quietID)
@@ -438,10 +470,11 @@ func (a *App) editVideo(w http.ResponseWriter, r *http.Request, _ string) error 
 }
 func (a *App) collections(w http.ResponseWriter, r *http.Request, role string) error {
 	// 安静模式下儿童角色只看到家长指定的合集，其余合集（含空合集）消失。
+	client := childClient(r, role)
 	collectionsSQL := "SELECT * FROM collections ORDER BY rowid DESC"
 	args := []any{}
 	if role == "child" {
-		if active, quietID, e := a.quietState(); e != nil {
+		if active, quietID, e := a.quietState(client); e != nil {
 			return e
 		} else if active {
 			if quietID == "" {

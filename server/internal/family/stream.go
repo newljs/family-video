@@ -15,6 +15,7 @@ import (
 
 var streamResource = regexp.MustCompile(`^segment[0-9]{5,8}\.ts$`)
 var safeVideoID = regexp.MustCompile(`^[a-zA-Z0-9_-]{1,80}$`)
+var safeClientID = regexp.MustCompile(`^[a-zA-Z0-9_-]{1,64}$`)
 
 func (a *App) streamURL(id, resource, role string, expires int64) string {
 	return fmt.Sprintf("/media/%s/%s?expires=%d&role=%s&sig=%s", id, resource, expires, role, a.signature(id, resource, expires, role))

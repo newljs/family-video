@@ -158,4 +158,26 @@ void main() {
       await reporter.close(send: false);
     },
   );
+
+  test('server day overrides device date for reported events', () async {
+    final reports = <dynamic>[];
+    final api = FamilyApi(
+      client: MockClient((request) async {
+        if (request.url.path == '/health') {
+          return http.Response('{"watch_protocol":"events_v1"}', 200);
+        }
+        reports.addAll((jsonDecode(request.body) as Map)['reports'] as List);
+        return http.Response('{}', 200);
+      }),
+    )..server = 'http://server-day:8765';
+    final reporter = WatchReporter(
+      api,
+      now: () => DateTime(2026, 10, 25, 23, 59),
+    );
+    reporter.setServerDay('2026-10-26');
+    reporter.record('v1', watched: const Duration(seconds: 1));
+    await reporter.flush();
+    expect(reports.single['day'], '2026-10-26');
+    await reporter.close(send: false);
+  });
 }

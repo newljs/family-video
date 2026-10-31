@@ -301,7 +301,11 @@ const $$ = s => document.querySelectorAll(s);
 const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 // API 一律用相对路径：直连 :8765 与经 svc 代理 /family-video/ 都成立
 const api = async (path, opts) => {
-  const r = await fetch(path, opts);
+  const options = opts || {};
+  const r = await fetch(path, {
+    ...options,
+    headers: { 'X-Family-Client': 'parent', ...(options.headers || {}) },
+  });
   const data = await r.json().catch(() => ({}));
   if (!r.ok) throw new Error(data.detail || ('HTTP ' + r.status));
   return data;
@@ -463,6 +467,7 @@ $('#upload-btn').addEventListener('click', () => {
 const taskOps = t => {
   const ops = [];
   if (t.state === 'failed') ops.push(`<button class="act" data-op="retry" data-id="${esc(t.id)}">重试</button>`);
+  if (t.state === 'failed') ops.push(`<button class="act danger" data-op="cancel" data-id="${esc(t.id)}">清理</button>`);
   if (t.state === 'queued' || t.state === 'running') ops.push(`<button class="act danger" data-op="cancel" data-id="${esc(t.id)}">取消</button>`);
   return ops.join(' ');
 };

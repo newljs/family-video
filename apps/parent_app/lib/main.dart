@@ -551,6 +551,7 @@ class _ParentHomeState extends State<ParentHome> with WidgetsBindingObserver {
       setState(() {});
       pageChanges.value++;
     }
+    final skipped = <String>[];
     try {
       while (inbox.isNotEmpty) {
         final next =
@@ -559,11 +560,21 @@ class _ParentHomeState extends State<ParentHome> with WidgetsBindingObserver {
                 : 0;
         if (next < 0) break;
         final item = inbox[next];
-        await api.request('POST', '/api/imports', item);
+        try {
+          await api.request('POST', '/api/imports', item);
+        } on FamilyApiException catch (e) {
+          // A malformed item must not block every item behind it. Transient
+          // network/server failures keep the item for the next retry.
+          if (e.statusCode != 400) rethrow;
+          skipped.add('${item['title']}：${e.message}');
+        }
         inbox.remove(item);
         await persistInbox();
       }
       await refresh();
+      if (skipped.isNotEmpty) {
+        throw Exception('已跳过 ${skipped.length} 条无法导入的内容：${skipped.first}');
+      }
     } finally {
       syncingInbox = false;
       if (mounted) {
@@ -925,6 +936,8 @@ class _ParentHomeState extends State<ParentHome> with WidgetsBindingObserver {
                                 await api.logout();
                                 connected = false;
                                 collectionVideos = null;
+                                timeLimit = null;
+                                limitDraft = 30;
                                 videoTotal = taskTotal = activeTasks = 0;
                                 videos = [];
                                 tasks = [];

@@ -25,7 +25,7 @@ jobs:
       - uses: android-actions/setup-android@v3
       - uses: gradle/actions/setup-gradle@v4
       - name: Install Android platform
-        run: sdkmanager 'platforms;android-36' 'build-tools;36.0.0'
+        run: sdkmanager 'platforms;android-36' 'platforms;android-35' 'build-tools;36.0.0'
       - name: Install FFmpeg for worker integration tests
         run: sudo apt-get update && sudo apt-get install -y ffmpeg
       - name: Go, Flutter and native Android checks

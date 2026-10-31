@@ -25,14 +25,22 @@ func (a *App) reportWatch(w http.ResponseWriter, r *http.Request, _ string) erro
 	if len(body.Reports) == 0 || len(body.Reports) > 50 {
 		return fail(400, "一次上报 1-50 条观看记录")
 	}
+	client := clientID(r)
 	tx, err := a.DB.Begin()
 	if err != nil {
 		return err
 	}
 	defer tx.Rollback()
-	const upsert = `INSERT INTO watch_stats(video_id, plays, watched_ms, completed, last_watched_at)
+	const globalUpsert = `INSERT INTO watch_stats(video_id, plays, watched_ms, completed, last_watched_at)
 VALUES(?,?,?,?,CURRENT_TIMESTAMP)
 ON CONFLICT(video_id) DO UPDATE SET
+ plays=plays+excluded.plays,
+ watched_ms=watched_ms+excluded.watched_ms,
+ completed=completed+excluded.completed,
+ last_watched_at=CURRENT_TIMESTAMP`
+	const clientUpsert = `INSERT INTO client_watch_stats(client_id,video_id,plays,watched_ms,completed,last_watched_at)
+VALUES(?,?,?,?,?,CURRENT_TIMESTAMP)
+ON CONFLICT(client_id,video_id) DO UPDATE SET
  plays=plays+excluded.plays,
  watched_ms=watched_ms+excluded.watched_ms,
  completed=completed+excluded.completed,
@@ -40,7 +48,8 @@ ON CONFLICT(video_id) DO UPDATE SET
 	now := time.Now()
 	day := now.Format("2006-01-02")
 	oldest := now.AddDate(0, 0, -31).Format("2006-01-02")
-	watchedDays := map[string]int64{}
+	globalDays := map[string]int64{}
+	clientDays := map[string]int64{}
 	for _, report := range body.Reports {
 		if !safeVideoID.MatchString(report.VideoID) ||
 			report.WatchedMS < 0 || report.WatchedMS > 24*3600*1000 {
@@ -54,16 +63,29 @@ ON CONFLICT(video_id) DO UPDATE SET
 		if parseErr != nil || parsed.Format("2006-01-02") != reportDay || reportDay < oldest || reportDay > day {
 			continue
 		}
+		globalNew := true
 		if report.EventID != "" {
 			if len(report.EventID) > 64 || !safeVideoID.MatchString(report.EventID) {
 				continue
+			}
+			if client != "" {
+				result, err := tx.Exec("INSERT OR IGNORE INTO client_watch_events(client_id,event_id,day) VALUES(?,?,?)", client, report.EventID, reportDay)
+				if err != nil {
+					return err
+				}
+				if count, _ := result.RowsAffected(); count == 0 {
+					continue // 该客户端已处理过此事件。
+				}
 			}
 			result, err := tx.Exec("INSERT OR IGNORE INTO watch_events(event_id,day) VALUES(?,?)", report.EventID, reportDay)
 			if err != nil {
 				return err
 			}
 			if count, _ := result.RowsAffected(); count == 0 {
-				continue // 回执与统计在同一事务中，响应丢失后重试不会重复扣额度。
+				if client == "" {
+					continue // 旧客户端继续保持原有去重语义。
+				}
+				globalNew = false // 全局已计过，但仍要为这个客户端计一次。
 			}
 		}
 		var exists int
@@ -80,12 +102,20 @@ ON CONFLICT(video_id) DO UPDATE SET
 		if report.Completed {
 			completed = 1
 		}
-		if _, err := tx.Exec(upsert, report.VideoID, plays, report.WatchedMS, completed); err != nil {
-			return err
+		if globalNew {
+			if _, err := tx.Exec(globalUpsert, report.VideoID, plays, report.WatchedMS, completed); err != nil {
+				return err
+			}
+			globalDays[reportDay] += report.WatchedMS
 		}
-		watchedDays[reportDay] += report.WatchedMS
+		if client != "" {
+			if _, err := tx.Exec(clientUpsert, client, report.VideoID, plays, report.WatchedMS, completed); err != nil {
+				return err
+			}
+			clientDays[reportDay] += report.WatchedMS
+		}
 	}
-	for reportDay, watched := range watchedDays {
+	for reportDay, watched := range globalDays {
 		if watched == 0 {
 			continue
 		}
@@ -94,11 +124,28 @@ ON CONFLICT(day) DO UPDATE SET watched_ms=watched_ms+excluded.watched_ms, update
 			return err
 		}
 	}
+	for reportDay, watched := range clientDays {
+		if watched == 0 {
+			continue
+		}
+		if _, err = tx.Exec(`INSERT INTO client_watch_days(client_id,day,watched_ms) VALUES(?,?,?)
+ON CONFLICT(client_id,day) DO UPDATE SET watched_ms=watched_ms+excluded.watched_ms, updated_at=CURRENT_TIMESTAMP`, client, reportDay, watched); err != nil {
+			return err
+		}
+	}
 	if _, err = tx.Exec("DELETE FROM watch_days WHERE day < ?", oldest); err != nil {
 		return err
 	}
 	if _, err = tx.Exec("DELETE FROM watch_events WHERE day < ?", oldest); err != nil {
 		return err
+	}
+	if client != "" {
+		if _, err = tx.Exec("DELETE FROM client_watch_days WHERE client_id=? AND day < ?", client, oldest); err != nil {
+			return err
+		}
+		if _, err = tx.Exec("DELETE FROM client_watch_events WHERE client_id=? AND day < ?", client, oldest); err != nil {
+			return err
+		}
 	}
 	if err = tx.Commit(); err != nil {
 		return err
@@ -111,6 +158,45 @@ ON CONFLICT(day) DO UPDATE SET watched_ms=watched_ms+excluded.watched_ms, update
 	if err != nil {
 		return err
 	}
-	reply(w, 200, watchBudget(a.DB, limit, afterLimit))
+	budget := watchBudget(a.DB, limit, afterLimit, client)
+	if client != "" {
+		if reset, e := a.resetClientIfAllWatched(client); e == nil && reset {
+			budget["watched_reset"] = true
+		}
+	}
+	reply(w, 200, budget)
 	return nil
+}
+
+// resetClientIfAllWatched keeps per-client watched time for analytics but
+// clears plays/completed once every video in the current library was seen.
+func (a *App) resetClientIfAllWatched(client string) (bool, error) {
+	if client == "" {
+		return false, nil
+	}
+	tx, err := a.DB.Begin()
+	if err != nil {
+		return false, err
+	}
+	defer tx.Rollback()
+	var total, completed int
+	if err = tx.QueryRow("SELECT COUNT(*) FROM videos").Scan(&total); err != nil {
+		return false, err
+	}
+	if total == 0 {
+		return false, nil
+	}
+	if err = tx.QueryRow("SELECT COUNT(*) FROM client_watch_stats WHERE client_id=? AND completed>0", client).Scan(&completed); err != nil {
+		return false, err
+	}
+	if completed < total {
+		return false, nil
+	}
+	if _, err = tx.Exec("UPDATE client_watch_stats SET plays=0, completed=0 WHERE client_id=?", client); err != nil {
+		return false, err
+	}
+	if err = tx.Commit(); err != nil {
+		return false, err
+	}
+	return true, nil
 }

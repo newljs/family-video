@@ -36,7 +36,8 @@ func (a *App) download(ctx context.Context, source, folder string) (string, erro
 	if err := os.MkdirAll(folder, 0700); err != nil {
 		return "", derror("storage", "无法创建下载目录", false)
 	}
-	c, cancel := context.WithTimeout(ctx, 5*time.Minute)
+	// A 2 GiB source on a modest home uplink can take well over five minutes.
+	c, cancel := context.WithTimeout(ctx, 30*time.Minute)
 	defer cancel()
 	a.progress(c, "cached", 0, 0)
 	if path, ok := a.cachedSource(c, source, folder); ok {

@@ -47,12 +47,11 @@ class _WatchOutbox {
 
   void record(
     String id,
-    DateTime time,
+    String day,
     Duration watched,
     bool played,
     bool completed,
   ) {
-    final day = _day(time);
     final event = open.putIfAbsent('$day/$id', () {
       final item = <String, dynamic>{
         'event_id': _eventId(),
@@ -149,6 +148,14 @@ class WatchReporter {
   final _WatchOutbox _outbox;
   Timer? _timer;
   bool _closed = false;
+  String? _serverDay;
+
+  /// 服务端返回的日期才是额度与安静模式的基准；设备日期只在首次同步前兜底。
+  void setServerDay(String? day) {
+    if (day != null && RegExp(r'^\d{4}-\d{2}-\d{2}$').hasMatch(day)) {
+      _serverDay = day;
+    }
+  }
 
   void record(
     String videoId, {
@@ -158,7 +165,13 @@ class WatchReporter {
   }) {
     if (_closed || videoId.isEmpty || _outbox.server.isEmpty) return;
     if (watched <= Duration.zero && !played && !completed) return;
-    _outbox.record(videoId, _now(), watched, played, completed);
+    _outbox.record(
+      videoId,
+      _serverDay ?? _day(_now()),
+      watched,
+      played,
+      completed,
+    );
   }
 
   Future<void> flush() => _outbox.flush(api);

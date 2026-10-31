@@ -7,11 +7,14 @@ param(
 $ErrorActionPreference = 'Stop'
 $tvRoot = Split-Path -Parent $PSScriptRoot
 if (-not $PSBoundParameters.ContainsKey('JavaHome')) {
-    $flutterSettings = Join-Path $env:APPDATA '.flutter_settings'
-    if (Test-Path -LiteralPath $flutterSettings) {
-        $flutterJdk = (Get-Content -Raw -LiteralPath $flutterSettings | ConvertFrom-Json).'jdk-dir'
-        if ($flutterJdk) { $JavaHome = $flutterJdk }
+    $flutterJdk = $null
+    if ($env:APPDATA) {
+        $flutterSettings = Join-Path $env:APPDATA '.flutter_settings'
+        if (Test-Path -LiteralPath $flutterSettings) {
+            $flutterJdk = (Get-Content -Raw -LiteralPath $flutterSettings | ConvertFrom-Json).'jdk-dir'
+        }
     }
+    if ($flutterJdk) { $JavaHome = $flutterJdk }
 }
 if (-not $JavaHome) { throw 'Set JAVA_HOME to JDK 17+ or pass -JavaHome.' }
 $env:JAVA_HOME = $JavaHome
@@ -22,13 +25,17 @@ if (-not $sdkRoot -and (Test-Path -LiteralPath $localProperties)) {
     $sdkLine = Get-Content -LiteralPath $localProperties | Where-Object { $_ -match '^sdk.dir=' } | Select-Object -First 1
     if ($sdkLine) { $sdkRoot = $sdkLine.Substring(8).Replace('\\', '\').Replace('\:', ':') }
 }
-if (-not $sdkRoot) { $sdkRoot = Join-Path $env:LOCALAPPDATA 'Android/Sdk' }
+if (-not $sdkRoot -and $env:LOCALAPPDATA) { $sdkRoot = Join-Path $env:LOCALAPPDATA 'Android/Sdk' }
 if (-not (Test-Path -LiteralPath $sdkRoot)) { throw 'Set ANDROID_HOME to the Android SDK directory.' }
 $env:ANDROID_HOME = $sdkRoot
 $taskSuffix = (Get-Culture).TextInfo.ToTitleCase($Mode)
 Push-Location (Join-Path $tvRoot 'apps/tv_app')
 try {
-    & ./gradlew.bat ":app:assemble$taskSuffix" :app:testDebugUnitTest :app:lintDebug --console=plain
+    if ($IsWindows -or $env:OS -eq 'Windows_NT') {
+        & ./gradlew.bat ":app:assemble$taskSuffix" :app:testDebugUnitTest :app:lintDebug --console=plain
+    } else {
+        & bash ./gradlew ":app:assemble$taskSuffix" :app:testDebugUnitTest :app:lintDebug --console=plain
+    }
     if ($LASTEXITCODE -ne 0) { throw 'TV build or checks failed' }
 } finally { Pop-Location }
 $apkFile = Join-Path $tvRoot "apps/tv_app/app/build/outputs/apk/$Mode/app-$Mode.apk"

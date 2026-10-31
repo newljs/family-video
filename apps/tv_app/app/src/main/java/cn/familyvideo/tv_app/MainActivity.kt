@@ -7,6 +7,7 @@ import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
 import android.os.SystemClock
+import android.provider.Settings
 import android.text.InputType
 import android.view.Gravity
 import android.view.KeyEvent
@@ -33,6 +34,7 @@ import androidx.media3.extractor.ExtractorsFactory
 import androidx.media3.extractor.mp4.FragmentedMp4Extractor
 import androidx.media3.extractor.mp4.Mp4Extractor
 import androidx.media3.ui.PlayerView
+import java.util.UUID
 import java.util.concurrent.Executors
 import java.util.concurrent.Future
 
@@ -58,6 +60,7 @@ class MainActivity : Activity() {
     private var generation = 0
     private var refreshing = false
     private var recovering = false
+    private var catalogFresh = false
     private var reporting = false
     private var wantsPlayback = true
     private var needsStart = true
@@ -68,6 +71,11 @@ class MainActivity : Activity() {
     private var lastRefresh = 0L
     private var lastReport = 0L
     private var pendingDelta = 0
+    private val clientId: String by lazy {
+        Settings.Secure.getString(contentResolver, Settings.Secure.ANDROID_ID)
+            ?.takeIf { Regex("^[A-Za-z0-9_-]{1,64}$").matches(it) }
+            ?: UUID.randomUUID().toString()
+    }
     private val switchVideo = Runnable {
         val delta = pendingDelta
         pendingDelta = 0
@@ -109,7 +117,7 @@ class MainActivity : Activity() {
         immersive()
         // Optional adb test entry, held in memory just like a manually entered address.
         intent.getStringExtra("server")?.let {
-            try { api = FamilyApi(FamilyApi.normalize(it)) } catch (_: Exception) { /* Show connection UI. */ }
+            try { api = FamilyApi(FamilyApi.normalize(it), clientId) } catch (_: Exception) { /* Show connection UI. */ }
         }
     }
 
@@ -119,6 +127,7 @@ class MainActivity : Activity() {
         generation++
         refreshing = false
         recovering = false
+        catalogFresh = false
         ensurePlayer()
         if (api == null) discover() else {
             connection.visibility = View.GONE
@@ -132,6 +141,9 @@ class MainActivity : Activity() {
         sample()
         ledger.seal()
         flushReports(force = true)
+        // The response callback may be removed with the handler below; do not
+        // leave reporting=true and block every future flush.
+        reporting = false
         active = false
         generation++
         scanTask?.cancel(true)
@@ -298,7 +310,7 @@ class MainActivity : Activity() {
         sample()
         player?.stop()
         player?.clearMediaItems()
-        api = FamilyApi(address)
+        api = FamilyApi(address, clientId)
         queue = PlaybackQueue()
         ledger = WatchLedger()
         budget = DailyBudget()
@@ -306,6 +318,7 @@ class MainActivity : Activity() {
         reporting = false
         refreshing = false
         recovering = false
+        catalogFresh = false
         needsStart = true
         wantsPlayback = true
         retryCount = 0
@@ -317,6 +330,7 @@ class MainActivity : Activity() {
     }
 
     private fun applyBudget(snapshot: BudgetSnapshot) {
+        ledger.useDay(snapshot.day)
         budget.limitMinutes = snapshot.minutes
         budget.serverWatchedMs = snapshot.watchedMs
         budget.day = snapshot.day
@@ -339,8 +353,9 @@ class MainActivity : Activity() {
                     refreshing = false
                     lastRefresh = SystemClock.elapsedRealtime()
                     reconnectDelay = 3000
+                    catalogFresh = true
                     applyBudget(snapshot)
-                    queue.catalog = catalog
+                    queue.applyCatalog(catalog)
                     if (queue.channelId.isNotEmpty() && catalog.channels.none { it.id == queue.channelId }) queue.channelId = ""
                     if (needsStart || (start && version == playVersion)) advance(0)
                 }
@@ -349,6 +364,7 @@ class MainActivity : Activity() {
                     if (!active || token != generation) return@post
                     refreshing = false
                     lastRefresh = SystemClock.elapsedRealtime()
+                    catalogFresh = false
                     if (start || needsStart) {
                         needsStart = true
                         status("暂时连不上家庭电脑，正在重试…\n确认重试 · 左键连接设置")
@@ -360,12 +376,13 @@ class MainActivity : Activity() {
     }
 
     private fun advance(delta: Int) {
-        if (!active || api == null || connection.visibility == View.VISIBLE) return
+        if (!active || api == null || !catalogFresh || connection.visibility == View.VISIBLE) return
         if (delta != 0) wantsPlayback = true
         handler.removeCallbacks(reconnect)
         val video = queue.next(delta, budget.exhausted(ledger), budget.afterLimitChannel)
         if (video == null) {
             playVersion++
+            recovering = false
             sample()
             ledger.seal()
             player?.stop()
@@ -386,7 +403,7 @@ class MainActivity : Activity() {
         playVersion++
         sample()
         if (continuing) ledger.rebase(SystemClock.elapsedRealtime(), position)
-        else ledger.start(video.id, SystemClock.elapsedRealtime(), position)
+        else ledger.start(video.id, SystemClock.elapsedRealtime(), position, budget.day)
         activeVideo = video
         queue.currentId = video.id
         needsStart = false
@@ -421,6 +438,7 @@ class MainActivity : Activity() {
         val position = player?.currentPosition ?: 0
         player?.stop()
         bufferSince = 0
+        catalogFresh = false
         recovering = true
         val token = generation
         val version = playVersion
@@ -431,10 +449,15 @@ class MainActivity : Activity() {
                 val snapshot = client.budget()
                 val catalog = client.catalog()
                 handler.post {
-                    if (!active || token != generation || version != playVersion) return@post
+                    if (!active || token != generation || version != playVersion ||
+                        connection.visibility == View.VISIBLE) {
+                        recovering = false
+                        return@post
+                    }
                     recovering = false
+                    catalogFresh = true
                     applyBudget(snapshot)
-                    queue.catalog = catalog
+                    queue.applyCatalog(catalog)
                     val refreshed = queue.items(budget.exhausted(ledger), budget.afterLimitChannel)
                         .firstOrNull { it.id == video.id }
                     if (refreshed != null && retryCount++ == 0) play(refreshed, position, continuing = true)
@@ -445,7 +468,11 @@ class MainActivity : Activity() {
                 }
             } catch (_: Exception) {
                 handler.post {
-                    if (!active || token != generation || version != playVersion) return@post
+                    if (!active || token != generation || version != playVersion ||
+                        connection.visibility == View.VISIBLE) {
+                        recovering = false
+                        return@post
+                    }
                     recovering = false
                     needsStart = true
                     status("网络暂时断开，正在重新连接…\n确认重试 · 左键连接设置")
@@ -530,6 +557,14 @@ class MainActivity : Activity() {
                         sample()
                         ledger.seal()
                         flushReports()
+                        generation++
+                        playVersion++
+                        recovering = false
+                        refreshing = false
+                        catalogFresh = false
+                        handler.removeCallbacks(reconnect)
+                        handler.removeCallbacks(switchVideo)
+                        pendingDelta = 0
                         player?.stop()
                         activeVideo = null
                         needsStart = true
@@ -551,6 +586,10 @@ class MainActivity : Activity() {
             KeyEvent.KEYCODE_MEDIA_NEXT, KeyEvent.KEYCODE_MEDIA_PREVIOUS, KeyEvent.KEYCODE_MENU)
         if (!handled) return super.dispatchKeyEvent(event)
         if (event.action != KeyEvent.ACTION_DOWN || event.repeatCount > 0) return true
+        val switching = event.keyCode in setOf(KeyEvent.KEYCODE_DPAD_UP, KeyEvent.KEYCODE_CHANNEL_UP,
+            KeyEvent.KEYCODE_MEDIA_PREVIOUS, KeyEvent.KEYCODE_DPAD_DOWN, KeyEvent.KEYCODE_CHANNEL_DOWN,
+            KeyEvent.KEYCODE_MEDIA_NEXT)
+        if (switching && (!catalogFresh || recovering)) return true
         when (event.keyCode) {
             KeyEvent.KEYCODE_DPAD_UP, KeyEvent.KEYCODE_CHANNEL_UP, KeyEvent.KEYCODE_MEDIA_PREVIOUS,
             KeyEvent.KEYCODE_DPAD_DOWN, KeyEvent.KEYCODE_CHANNEL_DOWN, KeyEvent.KEYCODE_MEDIA_NEXT -> {

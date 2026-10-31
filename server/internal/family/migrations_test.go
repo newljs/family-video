@@ -33,7 +33,7 @@ func TestMigrationMakesLegacyVideosVisibleAndBacksUp(t *testing.T) {
 	var version, published int
 	a.DB.QueryRow("PRAGMA user_version").Scan(&version)
 	a.DB.QueryRow("SELECT published FROM videos WHERE id='old'").Scan(&published)
-	if version != 6 || published != 1 {
+	if version != 7 || published != 1 {
 		t.Fatal(version, published)
 	}
 	backups, _ := filepath.Glob(filepath.Join(c.Data, "database", "before-v3-*.sqlite3"))
@@ -135,5 +135,38 @@ func TestMigrationV5BuildsCatalogAndPreservesStats(t *testing.T) {
 	snapshots, _ := filepath.Glob(filepath.Join(c.Data, "database", "before-v6-*.sqlite3"))
 	if len(snapshots) != 1 {
 		t.Fatal(snapshots)
+	}
+}
+
+func TestMigrationV6CreatesClientWatchTablesAndBackup(t *testing.T) {
+	c, err := InitConfig(Config{Data: t.TempDir()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	db, err := sql.Open("sqlite", filepath.Join(c.Data, "database", "family.sqlite3"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	index := strings.Index(schema, "CREATE TABLE IF NOT EXISTS client_watch_stats")
+	if index < 0 {
+		t.Fatal("client table missing from schema")
+	}
+	if _, err = db.Exec(schema[:index] + ";PRAGMA user_version=6;"); err != nil {
+		t.Fatal(err)
+	}
+	db.Close()
+	a, err := New(c)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer a.DB.Close()
+	var version, count int
+	a.DB.QueryRow("PRAGMA user_version").Scan(&version)
+	if err = a.DB.QueryRow("SELECT COUNT(*) FROM client_watch_stats").Scan(&count); err != nil {
+		t.Fatal(err)
+	}
+	snapshots, _ := filepath.Glob(filepath.Join(c.Data, "database", "before-v7-*.sqlite3"))
+	if version != 7 || len(snapshots) != 1 {
+		t.Fatalf("version=%d snapshots=%v", version, snapshots)
 	}
 }

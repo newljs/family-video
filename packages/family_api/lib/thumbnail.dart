@@ -29,8 +29,9 @@ class ThumbnailCache {
 
   /// 返回该缩略图的本地缓存文件；URL 不是缩略图、目录不可用或下载失败时为 null。
   Future<File?> fileFor(String url) async {
-    final match = RegExp(r'^/media/([A-Za-z0-9_-]{1,80})/thumbnail$')
-        .firstMatch(Uri.tryParse(url)?.path ?? '');
+    final match = RegExp(
+      r'^/media/([A-Za-z0-9_-]{1,80})/thumbnail$',
+    ).firstMatch(Uri.tryParse(url)?.path ?? '');
     final id = match?.group(1);
     if (id == null) return null;
     final dir = await _dir();
@@ -40,13 +41,15 @@ class ThumbnailCache {
       return file;
     }
     try {
-      final response =
-          await (fetch ?? _client.get)(Uri.parse(url)).timeout(const Duration(seconds: 30));
+      final response = await (fetch ?? _client.get)(Uri.parse(url)).timeout(
+        const Duration(seconds: 30),
+      );
       if (response.statusCode != 200 || response.bodyBytes.isEmpty) {
         return null;
       }
-      final part =
-          File('${dir.path}/$id.${DateTime.now().microsecondsSinceEpoch}.part');
+      final part = File(
+        '${dir.path}/$id.${DateTime.now().microsecondsSinceEpoch}.part',
+      );
       await part.writeAsBytes(response.bodyBytes, flush: true);
       await part.rename(file.path);
       return file;
@@ -108,6 +111,8 @@ class CachedThumbnail extends StatefulWidget {
 class _CachedThumbnailState extends State<CachedThumbnail> {
   File? _file;
   bool _failed = false;
+  bool _retried = false;
+  Timer? _retryTimer;
 
   @override
   void initState() {
@@ -119,15 +124,34 @@ class _CachedThumbnailState extends State<CachedThumbnail> {
   void didUpdateWidget(covariant CachedThumbnail oldWidget) {
     super.didUpdateWidget(oldWidget);
     if (oldWidget.url != widget.url) {
+      _retryTimer?.cancel();
       _file = null;
       _failed = false;
+      _retried = false;
       _resolve();
     }
   }
 
+  @override
+  void dispose() {
+    _retryTimer?.cancel();
+    super.dispose();
+  }
+
   Future<void> _resolve() async {
-    final file = await ThumbnailCache.instance.fileFor(widget.url);
-    if (!mounted) return;
+    final url = widget.url;
+    var file = await ThumbnailCache.instance.fileFor(url);
+    if (!mounted || url != widget.url) return;
+    if (file == null && !_retried) {
+      // Thumbnails use a stable month-scale URL, so a transient failure would
+      // otherwise leave the card blank until the next full list refresh.
+      _retried = true;
+      _retryTimer?.cancel();
+      _retryTimer = Timer(const Duration(seconds: 2), () {
+        if (mounted && url == widget.url) _resolve();
+      });
+      return;
+    }
     setState(() {
       _file = file;
       _failed = file == null;
@@ -146,10 +170,11 @@ class _CachedThumbnailState extends State<CachedThumbnail> {
       file,
       fit: widget.fit,
       cacheWidth: widget.cacheWidth,
-      errorBuilder: widget.errorBuilder == null
-          ? null
-          : (context, error, stackTrace) =>
-              widget.errorBuilder!(context, error, stackTrace),
+      errorBuilder:
+          widget.errorBuilder == null
+              ? null
+              : (context, error, stackTrace) =>
+                  widget.errorBuilder!(context, error, stackTrace),
     );
   }
 }

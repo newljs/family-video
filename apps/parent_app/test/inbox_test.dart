@@ -93,4 +93,66 @@ void main() {
       expect(prefs.getString('inbox'), '[]');
     },
   );
+  testWidgets('malformed inbox item is skipped and later items still sync', (
+    tester,
+  ) async {
+    SharedPreferences.setMockInitialValues({
+      'server': 'http://home:8765',
+      'inbox': jsonEncode([
+        {'title': '坏数据', 'text': 'not-a-link'},
+        {'title': '好数据', 'text': 'https://v.douyin.com/good/'},
+      ]),
+    });
+    FlutterSecureStorage.setMockInitialValues({});
+    final imported = <String>[];
+    final api = FamilyApi(
+      clientRole: 'parent',
+      client: MockClient((r) async {
+        if (r.url.path == '/api/imports') {
+          final text = jsonDecode(r.body)['text'] as String;
+          if (text == 'not-a-link') {
+            return http.Response(jsonEncode({'detail': 'invalid link'}), 400);
+          }
+          imported.add(text);
+          return http.Response(
+            jsonEncode({'id': 't1', 'state': 'queued'}),
+            200,
+          );
+        }
+        final Object body = switch (r.url.path) {
+          '/health' => {
+            'access_mode': 'open_lan',
+            'content_mode': 'direct',
+            'library_mode': 'managed',
+          },
+          '/api/settings/time-limit' => {
+            'limit_minutes': 0,
+            'watched_ms_today': 0,
+            'day': '2026-10-30',
+            'after_limit_collection_id': '',
+            'exhausted': false,
+          },
+          '/api/videos' || '/api/tasks' || '/api/collections' => [],
+          _ => <String, dynamic>{},
+        };
+        return http.Response(jsonEncode(body), 200);
+      }),
+    );
+    await tester.pumpWidget(MaterialApp(home: ParentHome(api: api)));
+    await tester.pumpAndSettle();
+    await tester.scrollUntilVisible(
+      find.text('查看待同步收集箱（2）'),
+      200,
+      scrollable: find.byType(Scrollable).first,
+    );
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('查看待同步收集箱（2）'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('同步 2 条到家庭电脑'));
+    await tester.pumpAndSettle();
+    expect(imported, ['https://v.douyin.com/good/']);
+    expect((await SharedPreferences.getInstance()).getString('inbox'), '[]');
+    expect(find.textContaining('已跳过 1 条'), findsOneWidget);
+    await tester.pumpWidget(const SizedBox());
+  });
 }

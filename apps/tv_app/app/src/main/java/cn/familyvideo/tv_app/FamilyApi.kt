@@ -11,7 +11,7 @@ class HttpFailure(val status: Int) : IOException("HTTP $status")
 data class BudgetSnapshot(val minutes: Int, val watchedMs: Long, val day: String, val afterChannel: String)
 
 /** No HTTP response cache, file IO, database, preferences or image loader. */
-class FamilyApi(val server: String) {
+class FamilyApi(val server: String, private val clientId: String = "") {
     companion object {
         fun normalize(raw: String): String {
             val value = raw.trim().let { if (it.contains("://")) it else "http://$it" }
@@ -33,6 +33,9 @@ class FamilyApi(val server: String) {
             connection.useCaches = false
             connection.instanceFollowRedirects = false
             connection.setRequestProperty("X-Family-Client", "child")
+            if (clientId.isNotEmpty()) {
+                connection.setRequestProperty("X-Family-Client-Id", clientId)
+            }
             connection.setRequestProperty("Cache-Control", "no-store")
             if (body != null) {
                 connection.requestMethod = "POST"
@@ -70,7 +73,7 @@ class FamilyApi(val server: String) {
         val media = item.optString("media_url")
         if (id.isEmpty() || media.isEmpty()) null else {
             val url = if (media.startsWith('/')) server + media else URI(server + "/").resolve(media).toString()
-            Video(id, item.optString("title", "家庭视频"), url)
+            Video(id, item.optString("title", "家庭视频"), url, item.optInt("completed_count", 0) > 0)
         }
     }
 

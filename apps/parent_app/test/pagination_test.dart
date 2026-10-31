@@ -24,6 +24,20 @@ Future<void> reachBottom(WidgetTester tester) async {
 }
 
 void main() {
+  test('failed search keeps seeded rows available offline', () async {
+    final data = rows(5);
+    final page = PagedItems(
+      loader: (offset, limit, query) async {
+        throw Exception('电脑暂时离线');
+      },
+    )..seed(data.take(3).toList(), data.length);
+    addTearDown(page.dispose);
+    await page.refresh(query: {'search': '内容 1'});
+    expect(page.error, contains('离线'));
+    expect(page.items.single['id'], '1');
+    expect(page.total, 1);
+  });
+
   test(
     'failed next page keeps rows and retries the same offset without duplicates',
     () async {
