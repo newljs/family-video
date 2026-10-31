@@ -31,7 +31,7 @@ class FamilyApiTest {
             """{"status":"ok","backend":"go"}""",
             """[{"id":"a","title":"A","media_url":"/media/a/video?sig=test"}]""",
             """[{"id":"songs","title":"儿歌","videos":[{"id":"a","title":"A","media_url":"/media/a/video?sig=test"}]}]""",
-            """{"limit_minutes":10,"watched_ms_today":1234,"day":"2026-10-26","after_limit_collection_id":"songs"}""",
+            """{}""",
         ).forEach { server.enqueue(MockResponse().setBody(it)) }
         server.start()
         try {
@@ -42,8 +42,7 @@ class FamilyApiTest {
             assertEquals("$base/media/a/video?sig=test", catalog.videos.single().url)
             assertEquals("a", catalog.channels.single().videos.single().id)
             val event = WatchEvent(day = "2026-10-26", videoId = "a", watchedMs = 1000, played = true)
-            val budget = api.report(listOf(event))
-            assertEquals("songs", budget.afterChannel)
+            assertTrue(api.report(listOf(event)))
             val requests = (1..4).map { server.takeRequest() }
             assertEquals(listOf("/family-video/health", "/family-video/api/videos",
                 "/family-video/api/collections", "/family-video/api/watch"), requests.map { it.path })
@@ -51,7 +50,7 @@ class FamilyApiTest {
             assertEquals(event.id, reported.getString("event_id"))
             assertEquals(1000, reported.getInt("watched_ms"))
             assertTrue(requests.all { it.getHeader("X-Family-Client") == "child" &&
-                it.getHeader("Cache-Control") == "no-store" })
+                it.getHeader("X-Family-App") == "tv" && it.getHeader("Cache-Control") == "no-store" })
         } finally { server.shutdown() }
     }
 }

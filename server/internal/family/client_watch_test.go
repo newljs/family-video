@@ -103,3 +103,26 @@ func TestClientWatchedStateResetsWhenWholeLibraryWasSeen(t *testing.T) {
 		}
 	}
 }
+
+// requestForApp 在 requestForClient 的基础上允许携带客户端应用标识。
+func requestForApp(t *testing.T, a *App, method, path, role, client, app string, body any) *httptest.ResponseRecorder {
+	t.Helper()
+	var data io.Reader
+	if body != nil {
+		raw, _ := json.Marshal(body)
+		data = bytes.NewReader(raw)
+	}
+	r := httptest.NewRequest(method, path, data)
+	if role != "" {
+		r.Header.Set("X-Family-Client", role)
+	}
+	if client != "" {
+		r.Header.Set("X-Family-Client-Id", client)
+	}
+	if app != "" {
+		r.Header.Set("X-Family-App", app)
+	}
+	w := httptest.NewRecorder()
+	a.Handler().ServeHTTP(w, r)
+	return w
+}

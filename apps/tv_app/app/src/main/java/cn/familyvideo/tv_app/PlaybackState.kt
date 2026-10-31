@@ -41,21 +41,18 @@ class PlaybackQueue {
         catalog = next.copy(videos = kept)
     }
 
-    private fun source(quiet: Boolean, quietChannel: String): List<Video> =
-        if (quiet) {
-            catalog.channels.firstOrNull { it.id == quietChannel }?.videos ?: emptyList()
-        } else if (channelId.isEmpty()) catalog.videos.filterNot { it.completed }
+    private fun source(): List<Video> =
+        if (channelId.isEmpty()) catalog.videos.filterNot { it.completed }
         else catalog.channels.firstOrNull { it.id == channelId }?.videos ?: emptyList()
 
-    fun items(quiet: Boolean, quietChannel: String): List<Video> =
-        source(quiet, quietChannel).filterNot { it.id in failed }
+    fun items(): List<Video> = source().filterNot { it.id in failed }
 
-    fun next(delta: Int, quiet: Boolean, quietChannel: String): Video? {
-        val items = items(quiet, quietChannel)
+    fun next(delta: Int): Video? {
+        val items = items()
         if (items.isEmpty()) return null
         val current = items.indexOfFirst { it.id == currentId }
         val index = if (current < 0) {
-            val original = source(quiet, quietChannel)
+            val original = source()
             val oldIndex = original.indexOfFirst { it.id == currentId }
             if (oldIndex >= 0 && delta != 0) {
                 val direction = if (delta < 0) -1 else 1
@@ -98,13 +95,6 @@ class WatchLedger {
         day = date
     }
 
-    /** Server day is authoritative; seal the old event when the server day advances. */
-    fun useDay(date: String) {
-        if (date.isEmpty() || date == day) return
-        seal()
-        day = date
-    }
-
     fun rebase(now: Long, position: Long) {
         sampleTime = now
         samplePosition = position
@@ -139,15 +129,4 @@ class WatchLedger {
 
     fun batch(): List<WatchEvent> = pending.take(50)
     fun acknowledge(ids: Set<String>) { pending.removeAll { it.id in ids } }
-    fun unreportedMs(date: String): Long = pending.filter { it.day == date }.sumOf { it.watchedMs } +
-        if (day == date) milliseconds else 0
-}
-
-class DailyBudget {
-    var limitMinutes = 0
-    var serverWatchedMs = 0L
-    var day = WatchLedger.today()
-    var afterLimitChannel = ""
-    fun exhausted(ledger: WatchLedger): Boolean = limitMinutes > 0 &&
-        serverWatchedMs + ledger.unreportedMs(day) >= limitMinutes * 60000L
 }

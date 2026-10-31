@@ -54,7 +54,6 @@ class MainActivity : Activity() {
     private var api: FamilyApi? = null
     private var queue = PlaybackQueue()
     private var ledger = WatchLedger()
-    private var budget = DailyBudget()
     private var activeVideo: Video? = null
     private var active = false
     private var generation = 0
@@ -313,7 +312,6 @@ class MainActivity : Activity() {
         api = FamilyApi(address, clientId)
         queue = PlaybackQueue()
         ledger = WatchLedger()
-        budget = DailyBudget()
         activeVideo = null
         reporting = false
         refreshing = false
@@ -329,14 +327,6 @@ class MainActivity : Activity() {
         refresh(start = true)
     }
 
-    private fun applyBudget(snapshot: BudgetSnapshot) {
-        ledger.useDay(snapshot.day)
-        budget.limitMinutes = snapshot.minutes
-        budget.serverWatchedMs = snapshot.watchedMs
-        budget.day = snapshot.day
-        budget.afterLimitChannel = snapshot.afterChannel
-    }
-
     private fun refresh(start: Boolean = false) {
         val client = api ?: return
         if (refreshing || recovering || !active) return
@@ -346,7 +336,6 @@ class MainActivity : Activity() {
         network.execute {
             try {
                 client.verify()
-                val snapshot = client.budget()
                 val catalog = client.catalog()
                 handler.post {
                     if (!active || token != generation) return@post
@@ -354,7 +343,6 @@ class MainActivity : Activity() {
                     lastRefresh = SystemClock.elapsedRealtime()
                     reconnectDelay = 3000
                     catalogFresh = true
-                    applyBudget(snapshot)
                     queue.applyCatalog(catalog)
                     if (queue.channelId.isNotEmpty() && catalog.channels.none { it.id == queue.channelId }) queue.channelId = ""
                     if (needsStart || (start && version == playVersion)) advance(0)
@@ -379,7 +367,7 @@ class MainActivity : Activity() {
         if (!active || api == null || !catalogFresh || connection.visibility == View.VISIBLE) return
         if (delta != 0) wantsPlayback = true
         handler.removeCallbacks(reconnect)
-        val video = queue.next(delta, budget.exhausted(ledger), budget.afterLimitChannel)
+        val video = queue.next(delta)
         if (video == null) {
             playVersion++
             recovering = false
@@ -403,7 +391,7 @@ class MainActivity : Activity() {
         playVersion++
         sample()
         if (continuing) ledger.rebase(SystemClock.elapsedRealtime(), position)
-        else ledger.start(video.id, SystemClock.elapsedRealtime(), position, budget.day)
+        else ledger.start(video.id, SystemClock.elapsedRealtime(), position)
         activeVideo = video
         queue.currentId = video.id
         needsStart = false
@@ -446,7 +434,6 @@ class MainActivity : Activity() {
         network.execute {
             try {
                 client.verify()
-                val snapshot = client.budget()
                 val catalog = client.catalog()
                 handler.post {
                     if (!active || token != generation || version != playVersion ||
@@ -456,9 +443,8 @@ class MainActivity : Activity() {
                     }
                     recovering = false
                     catalogFresh = true
-                    applyBudget(snapshot)
                     queue.applyCatalog(catalog)
-                    val refreshed = queue.items(budget.exhausted(ledger), budget.afterLimitChannel)
+                    val refreshed = queue.items()
                         .firstOrNull { it.id == video.id }
                     if (refreshed != null && retryCount++ == 0) play(refreshed, position, continuing = true)
                     else {
@@ -502,12 +488,11 @@ class MainActivity : Activity() {
         if (events.isEmpty()) return
         reporting = true
         network.execute {
-            val response = try { client.report(events) } catch (_: Exception) { null }
+            val ok = try { client.report(events) } catch (_: Exception) { false }
             handler.post {
-                if (response != null) reportingLedger.acknowledge(events.map { it.id }.toSet())
+                if (ok) reportingLedger.acknowledge(events.map { it.id }.toSet())
                 if (reportingLedger !== ledger) return@post
                 reporting = false
-                if (response != null) applyBudget(response)
             }
         }
     }
@@ -529,13 +514,10 @@ class MainActivity : Activity() {
 
     private fun channels() {
         if (dialog?.isShowing == true) return
-        val quiet = budget.exhausted(ledger)
-        val available = if (quiet) queue.catalog.channels.filter { it.id == budget.afterLimitChannel }
-            else queue.catalog.channels
         val labels = mutableListOf<String>()
         val ids = mutableListOf<String>()
-        if (!quiet) { labels += "全部视频"; ids += "" }
-        available.forEach { labels += it.title; ids += it.id }
+        labels += "全部视频"; ids += ""
+        queue.catalog.channels.forEach { labels += it.title; ids += it.id }
         labels += "刷新内容"
         labels += "连接设置"
         dialog = AlertDialog.Builder(this).setTitle("选择播放合集")

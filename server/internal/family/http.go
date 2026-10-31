@@ -106,6 +106,12 @@ func childClient(r *http.Request, role string) string {
 	return ""
 }
 
+// tvRequest 标记来自电视端的请求：电视端不参与每日时长限制，目录与合集
+// 不随安静模式收缩；观看统计仍按设备照常记录。
+func tvRequest(r *http.Request) bool {
+	return r.Header.Get("X-Family-App") == "tv"
+}
+
 func watchStatsJoin(client string) (string, []any) {
 	if client == "" {
 		return " LEFT JOIN watch_stats s ON s.video_id=v.id", nil
@@ -188,9 +194,9 @@ func (a *App) Handler() http.Handler {
 			}
 		}
 		// 安静模式：当日额度用完后不做提示，儿童角色的目录静默收缩为
-		// 家长指定的合集；未指定合集时全部隐藏。
+		// 家长指定的合集；未指定合集时全部隐藏。电视端豁免。
 		quiet, quietID := false, ""
-		if role == "child" {
+		if role == "child" && !tvRequest(r) {
 			if active, id, e := a.quietState(client); e != nil {
 				return e
 			} else if active {
@@ -469,11 +475,12 @@ func (a *App) editVideo(w http.ResponseWriter, r *http.Request, _ string) error 
 	return nil
 }
 func (a *App) collections(w http.ResponseWriter, r *http.Request, role string) error {
-	// 安静模式下儿童角色只看到家长指定的合集，其余合集（含空合集）消失。
+	// 安静模式下儿童角色只看到家长指定的合集，其余合集（含空合集）消失；
+	// 电视端豁免，始终看到全部合集。
 	client := childClient(r, role)
 	collectionsSQL := "SELECT * FROM collections ORDER BY rowid DESC"
 	args := []any{}
-	if role == "child" {
+	if role == "child" && !tvRequest(r) {
 		if active, quietID, e := a.quietState(client); e != nil {
 			return e
 		} else if active {

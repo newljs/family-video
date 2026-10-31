@@ -80,7 +80,7 @@ func (a *App) videoPage(w http.ResponseWriter, r *http.Request, role string) err
 	}
 	join, args := watchStatsJoin(client)
 	from := " FROM videos v" + join + " WHERE 1=1"
-	if role == "child" {
+	if role == "child" && !tvRequest(r) {
 		quiet, id, err := a.quietState(client)
 		if err != nil {
 			return err

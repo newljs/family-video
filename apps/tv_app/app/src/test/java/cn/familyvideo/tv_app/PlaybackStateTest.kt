@@ -11,32 +11,21 @@ class PlaybackStateTest {
     @Test fun remoteSwitchingWrapsAndUsesCollectionOrder() {
         val queue = PlaybackQueue()
         queue.catalog = Catalog(listOf(a, b, c), listOf(Channel("songs", "儿歌", listOf(c, a))))
-        assertEquals(a, queue.next(0, false, ""))
-        assertEquals(c, queue.next(-1, false, ""))
-        assertEquals(a, queue.next(1, false, ""))
+        assertEquals(a, queue.next(0))
+        assertEquals(c, queue.next(-1))
+        assertEquals(a, queue.next(1))
         queue.channelId = "songs"
-        assertEquals(c, queue.next(1, false, ""))
-        assertEquals(a, queue.next(1, false, ""))
-    }
-
-    @Test fun quietModeOverridesPreviouslySelectedChannelAndNeverFallsBackToAll() {
-        val queue = PlaybackQueue()
-        queue.catalog = Catalog(listOf(a, b, c), listOf(Channel("quiet", "安静", listOf(b))))
-        queue.channelId = "missing"
-        queue.currentId = "a"
-        assertEquals(b, queue.next(1, true, "quiet"))
-        assertEquals(b, queue.next(1, true, "quiet"))
-        assertNull(queue.next(1, true, ""))
-        assertNull(queue.next(1, true, "deleted"))
+        assertEquals(c, queue.next(1))
+        assertEquals(a, queue.next(1))
     }
 
     @Test fun allBrokenVideosStopInsteadOfLooping() {
         val queue = PlaybackQueue()
         queue.catalog = Catalog(listOf(a, b), emptyList())
         queue.failed += "a"
-        assertEquals(b, queue.next(1, false, ""))
+        assertEquals(b, queue.next(1))
         queue.failed += "b"
-        assertNull(queue.next(1, false, ""))
+        assertNull(queue.next(1))
     }
 
     @Test fun skippingFailedCurrentKeepsForwardOrder() {
@@ -44,9 +33,9 @@ class PlaybackStateTest {
         queue.catalog = Catalog(listOf(a, b, c), emptyList())
         queue.currentId = "b"
         queue.failed += "b"
-        assertEquals(c, queue.next(1, false, ""))
+        assertEquals(c, queue.next(1))
         queue.currentId = "b"
-        assertEquals(a, queue.next(-1, false, ""))
+        assertEquals(a, queue.next(-1))
     }
 
     @Test fun pausedBufferingAndSeekingTimeAreExcluded() {
@@ -78,23 +67,6 @@ class PlaybackStateTest {
         assertEquals(1, ledger.batch().size)
         assertFalse(ledger.batch().single().played)
         assertTrue(ledger.batch().single().completed)
-        assertEquals(1000L, ledger.unreportedMs(WatchLedger.today()))
-    }
-
-    @Test fun localUnreportedTimeEnforcesBudgetBeforeServerResponse() {
-        val ledger = WatchLedger()
-        val budget = DailyBudget().apply { limitMinutes = 1; serverWatchedMs = 59000 }
-        ledger.start("a", 0)
-        ledger.sample(0, 0, true)
-        ledger.sample(1000, 1000, true)
-        assertTrue(budget.exhausted(ledger))
-        ledger.seal()
-        assertTrue(budget.exhausted(ledger))
-        ledger.acknowledge(ledger.batch().map { it.id }.toSet())
-        budget.serverWatchedMs = 60000
-        assertTrue(budget.exhausted(ledger))
-        budget.limitMinutes = 0
-        assertFalse(budget.exhausted(ledger))
     }
 
     @Test fun switchingAttributesTimeToPreviousVideo() {
@@ -142,23 +114,12 @@ class PlaybackStateTest {
         assertEquals(512, count)
     }
 
-    @Test fun serverDayOverridesLocalDateAndSealsOldEvent() {
-        val ledger = WatchLedger()
-        ledger.start("a", 0, 0, "2026-01-01")
-        ledger.sample(0, 0, true)
-        ledger.sample(1000, 1000, true)
-        ledger.useDay("2026-01-02")
-        ledger.sample(2000, 2000, true)
-        ledger.seal()
-        assertEquals(listOf("2026-01-01", "2026-01-02"), ledger.batch().map { it.day })
-    }
-
     @Test fun completedVideosAreHiddenFromAllVideosButKeptInCuratedChannels() {
         val done = Video("b", "B", "http://server/b", completed = true)
         val queue = PlaybackQueue()
         queue.applyCatalog(Catalog(listOf(a, done, c), listOf(Channel("ch", "合集", listOf(done, a)))))
-        assertEquals(setOf("a", "c"), queue.items(false, "").map { it.id }.toSet())
+        assertEquals(setOf("a", "c"), queue.items().map { it.id }.toSet())
         queue.channelId = "ch"
-        assertEquals(listOf("b", "a"), queue.items(false, "").map { it.id })
+        assertEquals(listOf("b", "a"), queue.items().map { it.id })
     }
 }

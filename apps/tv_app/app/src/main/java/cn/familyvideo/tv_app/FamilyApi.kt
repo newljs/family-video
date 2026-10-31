@@ -8,7 +8,6 @@ import java.net.URI
 import java.net.URL
 
 class HttpFailure(val status: Int) : IOException("HTTP $status")
-data class BudgetSnapshot(val minutes: Int, val watchedMs: Long, val day: String, val afterChannel: String)
 
 /** No HTTP response cache, file IO, database, preferences or image loader. */
 class FamilyApi(val server: String, private val clientId: String = "") {
@@ -33,6 +32,9 @@ class FamilyApi(val server: String, private val clientId: String = "") {
             connection.useCaches = false
             connection.instanceFollowRedirects = false
             connection.setRequestProperty("X-Family-Client", "child")
+            // 电视端标识：服务端据此豁免每日时长限制（安静模式不收缩电视目录），
+            // 观看统计仍按设备照常记录。
+            connection.setRequestProperty("X-Family-App", "tv")
             if (clientId.isNotEmpty()) {
                 connection.setRequestProperty("X-Family-Client-Id", clientId)
             }
@@ -88,17 +90,14 @@ class FamilyApi(val server: String, private val clientId: String = "") {
         return Catalog(videos, channels)
     }
 
-    fun budget(): BudgetSnapshot = parseBudget(JSONObject(request("/api/settings/time-limit")))
-    fun report(events: List<WatchEvent>): BudgetSnapshot {
+    /** 上报观看事件；返回是否成功。电视端不参与每日时长限制，响应的额度字段忽略。 */
+    fun report(events: List<WatchEvent>): Boolean {
         val reports = JSONArray()
         events.forEach {
             reports.put(JSONObject().put("event_id", it.id).put("day", it.day).put("video_id", it.videoId)
                 .put("watched_ms", it.watchedMs).put("played", it.played).put("completed", it.completed))
         }
-        return parseBudget(JSONObject(request("/api/watch", JSONObject().put("reports", reports))))
+        request("/api/watch", JSONObject().put("reports", reports))
+        return true
     }
-
-    private fun parseBudget(data: JSONObject) = BudgetSnapshot(
-        data.getInt("limit_minutes"), data.getLong("watched_ms_today"),
-        data.getString("day"), data.optString("after_limit_collection_id"))
 }

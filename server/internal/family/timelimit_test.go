@@ -145,3 +145,45 @@ func TestWatchReportAccumulatesDailyUsage(t *testing.T) {
 		t.Fatalf("invalid reports must not count: %v", got)
 	}
 }
+
+func TestTVClientSkipsQuietMode(t *testing.T) {
+	a := testApp(t)
+	seed(t, a, "w1", true)
+	seed(t, a, "w2", true)
+	colID := object(t, request(t, a, "POST", "/api/collections", "parent", map[string]any{
+		"title":     "睡前合集",
+		"video_ids": []string{"w1"},
+	}))["id"].(string)
+	object(t, request(t, a, "PUT", "/api/settings/time-limit", "parent", map[string]any{
+		"limit_minutes":             10,
+		"after_limit_collection_id": colID,
+	}))
+
+	// 电视端（X-Family-App: tv）额度用完：目录与合集不收缩，平板照常收缩。
+	object(t, requestForClient(t, a, "POST", "/api/watch", "child", "tv-1", map[string]any{
+		"reports": []map[string]any{{"event_id": "tv1", "day": today(), "video_id": "w2", "watched_ms": 10 * 60000, "played": true}},
+	}))
+	if got := object(t, requestForClient(t, a, "GET", "/api/settings/time-limit", "child", "tv-1", nil)); got["exhausted"] != true {
+		t.Fatalf("tv budget should be exhausted: %v", got)
+	}
+	tvVideos := list(t, requestForApp(t, a, "GET", "/api/videos", "child", "tv-1", "tv", nil))
+	if len(tvVideos) != 2 {
+		t.Fatalf("tv client should keep the full catalog after limit: %d", len(tvVideos))
+	}
+	// 平板用自己的额度：同样上报满 10 分钟后进入安静收缩。
+	object(t, requestForClient(t, a, "POST", "/api/watch", "child", "tab-1", map[string]any{
+		"reports": []map[string]any{{"event_id": "tab1", "day": today(), "video_id": "w1", "watched_ms": 10 * 60000, "played": true}},
+	}))
+	tabVideos := list(t, requestForClient(t, a, "GET", "/api/videos", "child", "tab-1", nil))
+	if len(tabVideos) != 1 || tabVideos[0]["id"] != "w1" {
+		t.Fatalf("tablet quiet mode should expose only the designated videos: %v", tabVideos)
+	}
+	tvCols := list(t, requestForApp(t, a, "GET", "/api/collections", "child", "tv-1", "tv", nil))
+	if len(tvCols) != 1 || tvCols[0]["id"] != colID {
+		t.Fatalf("tv client should see every collection: %v", tvCols)
+	}
+	page := object(t, requestForApp(t, a, "GET", "/api/videos?limit=1&offset=0", "child", "tv-1", "tv", nil))
+	if page["total"] != float64(2) {
+		t.Fatalf("tv paged catalog should not shrink: %v", page)
+	}
+}
