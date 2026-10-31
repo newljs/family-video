@@ -130,7 +130,12 @@ void main() {
       ),
     );
     await tester.pumpAndSettle();
-    final sync = find.widgetWithText(FilledButton, '同步 61 条到家庭电脑');
+    // Flutter 3.29 的 FilledButton.icon 返回私有子类，find.byType(FilledButton)
+    // 匹配不到；3.44 起返回基类。用 is 谓词在两个工具链下都成立。
+    final sync = find.ancestor(
+      of: find.text('同步 61 条到家庭电脑'),
+      matching: find.byWidgetPredicate((w) => w is FilledButton),
+    );
     final position = tester.getRect(sync);
     expect(find.text('61 条待同步 · 已显示 20 条'), findsOneWidget);
     await reachBottom(tester);
