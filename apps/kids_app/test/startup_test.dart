@@ -238,4 +238,51 @@ void main() {
       await tester.pump();
     },
   );
+
+  testWidgets(
+    'latest refresh exits after one deadline and retries without restart',
+    (tester) async {
+      await seedCache();
+      final previous = VideoPlayerPlatform.instance;
+      final player = CountingPlayer();
+      VideoPlayerPlatform.instance = player;
+      addTearDown(() => VideoPlayerPlatform.instance = previous);
+      var stalled = false;
+      final gate = Completer<void>();
+      final api = FamilyApi(
+        client: MockClient((r) async {
+          if (r.url.path == '/health') return response(health);
+          if (stalled &&
+              (r.url.path == '/api/videos' ||
+                  r.url.path == '/api/collections')) {
+            await gate.future;
+          }
+          if (r.url.path == '/api/videos') return response([fresh]);
+          if (r.url.path == '/api/collections') return response([]);
+          return response({});
+        }),
+      );
+      await tester.pumpWidget(
+        MaterialApp(home: KidsHome(api: api, downloads: EmptyDownloads(api))),
+      );
+      await tester.pumpAndSettle();
+      final dynamic feed = tester.state(find.byType(FeedView));
+
+      stalled = true;
+      unawaited(feed.loadLatest());
+      await tester.pump();
+      expect(find.byType(LoadingLatestBadge), findsOneWidget);
+      await tester.pump(const Duration(seconds: 31));
+      expect(find.byType(LoadingLatestBadge), findsNothing);
+
+      stalled = false;
+      unawaited(feed.loadLatest());
+      await tester.pumpAndSettle();
+      expect(find.byType(LoadingLatestBadge), findsNothing);
+      expect(tester.takeException(), isNull);
+      await tester.pumpWidget(const SizedBox());
+      gate.complete();
+      await tester.pump();
+    },
+  );
 }

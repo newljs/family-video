@@ -256,12 +256,12 @@ class _KidsHomeState extends State<KidsHome> with WidgetsBindingObserver {
 
     Future<void> section(String name) async {
       try {
-        // 目录已过 700 条（约 1MB，gzip 后 266KB），弱 WiFi 下传输会超过
-        // 5 秒；request() 给 30 秒截止并对瞬时失败自动换连接重试一次。
-        final results = await Future.wait([
-          verified,
-          api.request('GET', '/api/$name'),
-        ]);
+        // 手动刷新只等一轮 30 秒；后台同步保留 GET 自动重试。
+        final request =
+            progressive
+                ? api.request('GET', '/api/$name')
+                : api.requestWithTimeout('GET', '/api/$name');
+        final results = await Future.wait([verified, request]);
         final items = results[1] as List;
         loaded[name] = items;
         if (progressive) apply(name, items);
