@@ -111,7 +111,9 @@ void main() {
         MaterialApp(home: KidsHome(api: api, downloads: EmptyDownloads(api))),
       );
       await tester.pumpAndSettle();
-      await tester.pump(const Duration(seconds: 6));
+      // 目录刷新为 30 秒截止 + 一次自动重试（约 60.4 秒），离线错误态在
+      // 两轮尝试都失败后才出现。
+      await tester.pump(const Duration(seconds: 62));
       await tester.pumpAndSettle();
       expect(find.text('暂时连接不上家庭电脑'), findsOneWidget);
       expect(find.text('首页'), findsOneWidget);
